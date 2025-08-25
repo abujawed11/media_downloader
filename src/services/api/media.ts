@@ -66,3 +66,27 @@ export async function cancelJob(id: string) {
   const { data } = await api.post<Job>(`/jobs/${id}/cancel`, {});
   return data;
 }
+
+
+// src/services/api/media.ts
+const BASE = __DEV__
+  ? "http://YOUR_DEV_SERVER:8000"
+  : "https://your-prod-api.example.com";
+
+export async function getDirectUrl(params: { url: string; format_id: string }) {
+  const res = await fetch(`${BASE}/media/direct-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText);
+    throw new Error(msg);
+  }
+  return res.json() as Promise<{
+    url: string;
+    fileName?: string;
+    mime?: string;
+    headers?: Record<string, string>;
+  }>;
+}

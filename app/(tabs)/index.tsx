@@ -1,5 +1,13 @@
 // app/(tabs)/index.tsx
+import FloatingInput from "@/src/components/FloatingInput";
+import { useInfo } from "@/src/features/downloader/hooks/useInfo";
+import type { FormatOption } from "@/src/features/downloader/types";
+import { isValidUrl } from "@/src/features/downloader/utils";
+import { getDirectUrl } from "@/src/services/api/media"; // <-- implement as shown
+import { useDownloads } from "@/src/store/useDownloads";
+import { colors } from "@/src/theme/colors";
 import * as Clipboard from "expo-clipboard";
+import { router } from "expo-router";
 import { useMemo, useState } from "react";
 import {
   Alert,
@@ -12,15 +20,7 @@ import {
   Text,
   View,
 } from "react-native";
-
-import { router } from "expo-router";
-import FloatingInput from "../../src/components/FloatingInput";
-import { useInfo } from "../../src/features/downloader/hooks/useInfo";
-import type { FormatOption } from "../../src/features/downloader/types";
-import { isValidUrl } from "../../src/features/downloader/utils";
-import { createJob } from "../../src/services/api/media";
-import { useDownloads } from "../../src/store/useDownloads";
-import { colors } from "../../src/theme/colors";
+import { v4 as uuidv4 } from "uuid";
 
 // --- UI helpers ---
 function PillButton({
@@ -53,23 +53,17 @@ type CommonFormat = (typeof COMMON_FORMATS)[number];
 export default function HomeScreen() {
   const [url, setUrl] = useState("");
   const [formatModalOpen, setFormatModalOpen] = useState(false);
-  // IMPORTANT: store the server "format_string" here (e.g. "18" or "137+140")
   const [selectedFormat, setSelectedFormat] = useState<string | null>(null);
 
   const { loading, data, error, fetchInfo } = useInfo();
   const downloads = useDownloads();
 
-  // Clipboard paste
   async function handlePaste() {
     const clip = await Clipboard.getStringAsync();
-    if (clip && isValidUrl(clip)) {
-      setUrl(clip);
-    } else {
-      Alert.alert("Clipboard", "No valid URL found in clipboard.");
-    }
+    if (clip && isValidUrl(clip)) setUrl(clip);
+    else Alert.alert("Clipboard", "No valid URL found in clipboard.");
   }
 
-  // Simple platform badge
   const platform = useMemo(() => {
     const u = (url || "").toLowerCase();
     if (u.includes("youtu")) return "YouTube";
@@ -85,11 +79,9 @@ export default function HomeScreen() {
       return;
     }
     await fetchInfo(url);
-    // clear prior selection when fetching new info
     setSelectedFormat(null);
   }
 
-  // Nice label for a format option
   function fmtDisplay(f: FormatOption) {
     const size =
       typeof f.sizeBytes === "number" ? ` ~${(f.sizeBytes / 1e6).toFixed(1)}MB` : "";
@@ -99,53 +91,19 @@ export default function HomeScreen() {
 
   function openFormatPicker(preset?: CommonFormat) {
     if (preset && data?.formats?.length) {
-      // Find a matching format by label/ext; then select by format_string
       const target =
         preset === "mp3"
           ? data.formats.find(
-            (f) =>
-              f.label?.toLowerCase().includes("audio") ||
-              f.ext === "mp3" ||
-              f.ext === "m4a"
-          )
+              (f) =>
+                f.label?.toLowerCase().includes("audio") ||
+                f.ext === "mp3" ||
+                f.ext === "m4a"
+            )
           : data.formats.find((f) => f.label?.toLowerCase().includes(preset));
       setSelectedFormat(target?.format_string ?? null);
     }
     setFormatModalOpen(true);
   }
-
-  // async function onStartDownload() {
-  //   try {
-  //     if (!data || !selectedFormat) {
-  //       Alert.alert("Pick a format", "Please select a format to download.");
-  //       return;
-  //     }
-  //     // Optimistic add to local store
-  //     const id = `${Date.now()}`;
-  //     downloads.add({
-  //       id,
-  //       url,
-  //       title: data.title,
-  //       progress: 0,
-  //       status: "queued",
-  //     });
-
-  //     // Hit backend: GET /media/download?url=...&format=... (arraybuffer)
-  //     const res = await startDownload({ url, format: selectedFormat });
-  //     if (!res?.data) throw new Error("No data received");
-
-  //     // Mark completed (you can replace with device save using expo-file-system)
-  //     downloads.update(id, { status: "completed", progress: 1 });
-  //     Alert.alert(
-  //       "Download",
-  //       "Download started (stub). Wire up expo-file-system to save the file."
-  //     );
-  //     setFormatModalOpen(false);
-  //   } catch (e: any) {
-  //     Alert.alert("Download failed", e?.message ?? "Unknown error");
-  //   }
-  // }
-
 
   async function onStartDownload() {
     try {
@@ -153,40 +111,38 @@ export default function HomeScreen() {
         Alert.alert("Pick a format", "Please select a format to download.");
         return;
       }
-      // Find the chosen format object for metadata (size/ext/label)
-      const chosen = data.formats.find(f => f.format_string === selectedFormat);
 
-      // Optimistic local entry
-      const tempId = `temp-${Date.now()}`;
-      downloads.add({
-        id: tempId,
-        url,
-        title: data.title,
-        progress: 0,
-        status: "queued",
-        // optional meta for the card:
+      // Find chosen format for meta
+      const chosen = data.formats.find((f) => f.format_string === selectedFormat);
+      const title = data.title || "Untitled";
+      const fileSafeTitle = title.replace(/[\\/:*?"<>|]/g, "_");
+      const ext = chosen?.ext || "mp4";
+      const fileName = `${fileSafeTitle}.${ext}`;
+
+      // 1) Ask backend for a direct URL + headers
+      const direct = await getDirectUrl({ url, format_id: selectedFormat });
+      // direct: { url, fileName?, mime?, headers? }
+      const finalFileName = direct.fileName || fileName;
+
+      // 2) Generate a stable ID for RNBD (and store)
+      const jobId = uuidv4();
+
+      // 3) Start background download (store handles progress/done/error)
+      await downloads.start({
+        id: jobId,
+        title,
+        url: direct.url,
+        fileName: finalFileName,
+        headers: direct.headers,
+        mime: direct.mime,
         sizeBytes: chosen?.sizeBytes ?? null,
-        quality: chosen?.label ?? "",
-        ext: chosen?.ext ?? "",
-        thumbnail: data.thumbnail ?? null,
+        quality: chosen?.label ?? null,
+        ext: chosen?.ext ?? null,
       });
 
-      // Create server job
-      const job = await createJob({
-        url,
-        format: selectedFormat,           // <-- send format_string
-        title: data.title,
-        ext: chosen?.ext,
-      });
-
-      // Swap temp id with real job id
-      downloads.update(tempId, { id: job.id });
-
-      // Jump to Downloads tab
-      router.push("/(tabs)/downloads");
-
-      // Close picker
+      // 4) Go to Downloads tab
       setFormatModalOpen(false);
+      router.push("/(tabs)/downloads");
     } catch (e: any) {
       Alert.alert("Download failed", e?.message ?? "Unknown error");
     }
@@ -267,7 +223,11 @@ export default function HomeScreen() {
                   key={f}
                   onPress={() => openFormatPicker(f)}
                   className="px-3 py-2 rounded-full"
-                  style={{ backgroundColor: "#1a1a1a", borderWidth: 1, borderColor: "#333" }}
+                  style={{
+                    backgroundColor: "#1a1a1a",
+                    borderWidth: 1,
+                    borderColor: "#333",
+                  }}
                 >
                   <Text className="text-white text-xs uppercase">{f}</Text>
                 </Pressable>
@@ -308,7 +268,7 @@ export default function HomeScreen() {
               </Text>
             ) : null}
 
-            {/* ALL formats (no de-dup) */}
+            {/* ALL formats */}
             {data?.formats?.length ? (
               <>
                 <Text className="text-gray-300 mt-4 mb-2">All formats</Text>

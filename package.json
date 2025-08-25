@@ -38,6 +38,7 @@
     "react-dom": "19.0.0",
     "react-hook-form": "^7.62.0",
     "react-native": "0.79.6",
+    "react-native-background-downloader": "^2.3.4",
     "react-native-blob-util": "^0.22.2",
     "react-native-document-picker": "^9.3.1",
     "react-native-fs": "^2.20.0",
@@ -53,7 +54,9 @@
     "react-native-web": "~0.20.0",
     "react-native-webview": "13.13.5",
     "tailwindcss": "^3.4.17",
-    "zustand": "^5.0.8"
+    "zustand": "^5.0.8",
+    "expo-build-properties": "~0.14.8",
+    "expo-dev-client": "~5.2.4"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

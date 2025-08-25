@@ -3,9 +3,11 @@ import FloatingInput from "@/src/components/FloatingInput";
 import { useInfo } from "@/src/features/downloader/hooks/useInfo";
 import type { FormatOption } from "@/src/features/downloader/types";
 import { isValidUrl } from "@/src/features/downloader/utils";
-import { getDirectUrl } from "@/src/services/api/media"; // <-- implement as shown
+import { startBackgroundDownload } from "@/src/native/background/downloader";
+import { createJob, getDirectUrl } from "@/src/services/api/media"; // <-- implement as shown
 import { useDownloads } from "@/src/store/useDownloads";
 import { colors } from "@/src/theme/colors";
+import axios from "axios";
 import * as Clipboard from "expo-clipboard";
 import { router } from "expo-router";
 import { useMemo, useState } from "react";
@@ -20,7 +22,6 @@ import {
   Text,
   View,
 } from "react-native";
-import { v4 as uuidv4 } from "uuid";
 
 // --- UI helpers ---
 function PillButton({
@@ -94,16 +95,128 @@ export default function HomeScreen() {
       const target =
         preset === "mp3"
           ? data.formats.find(
-              (f) =>
-                f.label?.toLowerCase().includes("audio") ||
-                f.ext === "mp3" ||
-                f.ext === "m4a"
-            )
+            (f) =>
+              f.label?.toLowerCase().includes("audio") ||
+              f.ext === "mp3" ||
+              f.ext === "m4a"
+          )
           : data.formats.find((f) => f.label?.toLowerCase().includes(preset));
       setSelectedFormat(target?.format_string ?? null);
     }
     setFormatModalOpen(true);
   }
+
+  // async function onStartDownload() {
+  //   try {
+  //     if (!data || !selectedFormat) {
+  //       Alert.alert("Pick a format", "Please select a format to download.");
+  //       return;
+  //     }
+
+  //     // Find chosen format for meta
+  //     const chosen = data.formats.find((f) => f.format_string === selectedFormat);
+  //     const title = data.title || "Untitled";
+  //     const fileSafeTitle = title.replace(/[\\/:*?"<>|]/g, "_");
+  //     const ext = chosen?.ext || "mp4";
+  //     const fileName = `${fileSafeTitle}.${ext}`;
+
+  //     // 1) Ask backend for a direct URL + headers
+  //     const direct = await getDirectUrl({ url, format_id: selectedFormat });
+  //     // direct: { url, fileName?, mime?, headers? }
+  //     const finalFileName = direct.fileName || fileName;
+
+  //     // 2) Generate a stable ID for RNBD (and store)
+  //     const jobId = uuidv4();
+
+  //     // 3) Start background download (store handles progress/done/error)
+  //     await downloads.start({
+  //       id: jobId,
+  //       title,
+  //       url: direct.url,
+  //       fileName: finalFileName,
+  //       headers: direct.headers,
+  //       mime: direct.mime,
+  //       sizeBytes: chosen?.sizeBytes ?? null,
+  //       quality: chosen?.label ?? null,
+  //       ext: chosen?.ext ?? null,
+  //     });
+
+  //     // 4) Go to Downloads tab
+  //     setFormatModalOpen(false);
+  //     router.push("/(tabs)/downloads");
+  //   } catch (e: any) {
+  //     Alert.alert("Download failed", e?.message ?? "Unknown error");
+  //   }
+  // }
+
+  // async function onStartDownload() {
+  //   try {
+  //     if (!data || !selectedFormat) {
+  //       Alert.alert("Pick a format", "Please select a format to download.");
+  //       return;
+  //     }
+
+  //     // 1) sanitize: strip any UI-only suffixes like "-drc"
+  //     const raw = selectedFormat;
+  //     const fmt = raw.replace(/-.*$/, ""); // "299+140-drc" -> "299+140"
+
+  //     // (keep your optimistic add here if you like; omitted for brevity)
+
+  //     // 2) If it's a merge (contains "+"): use server job flow
+  //     if (fmt.includes("+")) {
+  //       const job = await createJob({
+  //         url,
+  //         format: fmt,
+  //         title: data.title,
+  //         ext: (data.formats.find(f => f.format_string === raw)?.ext) || undefined,
+  //       });
+  //       // move to Downloads list you already render/poll
+  //       router.push("/(tabs)/downloads");
+  //       return;
+  //     }
+
+  //     // 3) Progressive: get direct URL and start RNBD
+  //     const direct = await getDirectUrl({ url, format_id: fmt });
+
+  //     // Choose a local filename
+  //     const fileName =
+  //       direct.fileName ||
+  //       `${(data.title || "download").replace(/[^\w\-. ]+/g, "_")}.${(direct.mime?.includes("webm") ? "webm" : "mp4")}`;
+
+  //     startBackgroundDownload(
+  //       {
+  //         id: `dl-${Date.now()}`,
+  //         url: direct.url,
+  //         fileName,
+  //         headers: direct.headers || {},
+  //       },
+  //       {
+  //         onBegin: (bytes) => console.log("RNBD begin", bytes),
+  //         onProgress: (p) => console.log("RNBD progress", p),
+  //         onDone: (path) => console.log("RNBD done", path),
+  //         onError: (e) => console.log("RNBD error", e),
+  //       }
+  //     );
+
+  //     router.push("/(tabs)/downloads");
+  //   } catch (e: any) {
+  //     const status = axios.isAxiosError(e) ? e.response?.status : undefined;
+  //     if (status === 409) {
+  //       // Safety: fallback to job flow if server rejected (merge)
+  //       const job = await createJob({
+  //         url,
+  //         format: (selectedFormat || "").replace(/-.*$/, ""),
+  //         title: data?.title,
+  //         ext: undefined,
+  //       });
+  //       router.push("/(tabs)/downloads");
+  //       return;
+  //     }
+  //     Alert.alert("Download failed", String(e?.message || e));
+  //   }
+  // }
+
+
 
   async function onStartDownload() {
     try {
@@ -112,41 +225,121 @@ export default function HomeScreen() {
         return;
       }
 
-      // Find chosen format for meta
-      const chosen = data.formats.find((f) => f.format_string === selectedFormat);
-      const title = data.title || "Untitled";
-      const fileSafeTitle = title.replace(/[\\/:*?"<>|]/g, "_");
-      const ext = chosen?.ext || "mp4";
-      const fileName = `${fileSafeTitle}.${ext}`;
+      // Grab store without causing re-renders
+      const store = useDownloads.getState();
 
-      // 1) Ask backend for a direct URL + headers
-      const direct = await getDirectUrl({ url, format_id: selectedFormat });
-      // direct: { url, fileName?, mime?, headers? }
-      const finalFileName = direct.fileName || fileName;
+      // Sanitize format: strip UI suffixes like "-drc"
+      const raw = selectedFormat;                 // e.g., "299+140-drc" or "18"
+      const fmt = raw.replace(/-.*$/, "");        // -> "299+140" or "18"
+      const chosen = data.formats.find(f => f.format_string === raw);
 
-      // 2) Generate a stable ID for RNBD (and store)
-      const jobId = uuidv4();
+      // If it's a merge (contains "+"): use server job flow
+      if (fmt.includes("+")) {
+        const job = await createJob({
+          url,
+          format: fmt,
+          title: data.title,
+          ext: chosen?.ext,
+        });
 
-      // 3) Start background download (store handles progress/done/error)
-      await downloads.start({
-        id: jobId,
-        title,
-        url: direct.url,
-        fileName: finalFileName,
-        headers: direct.headers,
-        mime: direct.mime,
-        sizeBytes: chosen?.sizeBytes ?? null,
-        quality: chosen?.label ?? null,
-        ext: chosen?.ext ?? null,
+        // (Optional but nice) add a placeholder so the list isn't empty.
+        // NOTE: pause/resume/cancel here won't control the server job unless you also wire backend polling & actions.
+        const placeholderFile =
+          `${(data.title || "download").replace(/[^\w\-. ]+/g, "_")}.${chosen?.ext || "mp4"}`;
+
+        store.addNativeJob({
+          id: job.id,
+          title: data.title,
+          fileName: placeholderFile,
+          quality: chosen?.label || "merge",
+          ext: chosen?.ext || "mp4",
+          progress01: 0,
+          status: "queued",
+        });
+
+        router.push("/(tabs)/downloads");
+        return;
+      }
+
+      // Progressive: get a direct URL and start RN Background Downloader
+      const direct = await getDirectUrl({ url, format_id: fmt });
+
+      const id = `dl-${Date.now()}`;
+      const safeTitle = (data.title || "download").replace(/[^\w\-. ]+/g, "_");
+      const extFromChoice = chosen?.ext || (direct.mime?.includes("webm") ? "webm" : "mp4");
+      const fileName = direct.fileName || `${safeTitle}.${extFromChoice}`;
+      const mime = direct.mime || (extFromChoice === "webm" ? "video/webm" : "video/mp4");
+
+      // 1) Add to store immediately so the Downloads tab shows it
+      store.addNativeJob({
+        id,
+        title: data.title,
+        fileName,
+        quality: chosen?.label || undefined,
+        ext: extFromChoice,
+        sizeBytes: undefined,
+        progress01: 0,
+        status: "queued",
+        mime,
       });
 
-      // 4) Go to Downloads tab
-      setFormatModalOpen(false);
+      // 2) Start RNBD and pipe callbacks into the store
+      const task = startBackgroundDownload(
+        { id, url: direct.url, fileName, headers: direct.headers || {} },
+        {
+          onBegin: (expectedBytes) => {
+            store.update(id, {
+              status: "downloading",
+              sizeBytes: typeof expectedBytes === "number" ? expectedBytes : undefined,
+            });
+            console.log("RNBD begin", expectedBytes);
+          },
+          onProgress: (p) => {
+            store.updateProgress(id, p);
+            console.log("RNBD progress", p);
+          },
+          onDone: (dest) => {
+            store.markCompleted(id, dest);
+            console.log("RNBD done", dest);
+          },
+          onError: (e) => {
+            store.markFailed(id, String(e));
+            console.log("RNBD error", e);
+          },
+        }
+      );
+
+      // 3) Keep task reference for pause/resume/cancel
+      store.attachTask(id, task);
+
       router.push("/(tabs)/downloads");
     } catch (e: any) {
-      Alert.alert("Download failed", e?.message ?? "Unknown error");
+      const status = axios.isAxiosError(e) ? e.response?.status : undefined;
+      if (status === 409) {
+        // Server rejected (merge). Fallback to job flow and show a placeholder entry.
+        const fmtClean = (selectedFormat || "").replace(/-.*$/, "");
+        const job = await createJob({ url, format: fmtClean, title: data?.title, ext: undefined });
+
+        const fileName =
+          `${(data?.title || "download").replace(/[^\w\-. ]+/g, "_")}.mp4`;
+
+        useDownloads.getState().addNativeJob({
+          id: job.id,
+          title: data?.title,
+          fileName,
+          quality: "merge",
+          ext: "mp4",
+          progress01: 0,
+          status: "queued",
+        });
+
+        router.push("/(tabs)/downloads");
+        return;
+      }
+      Alert.alert("Download failed", String(e?.message || e));
     }
   }
+
 
   return (
     <KeyboardAvoidingView

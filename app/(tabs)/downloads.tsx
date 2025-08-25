@@ -1,6 +1,7 @@
 // app/(tabs)/downloads.tsx
 import ProgressBar from "@/src/components/ProgressBar";
 import { copyToDownloads } from "@/src/native/background/fileUtils";
+import { type Job } from "@/src/services/api/media";
 import type { JobStatus } from "@/src/store/useDownloads";
 import { useDownloads } from "@/src/store/useDownloads";
 import { colors } from "@/src/theme/colors";
@@ -28,6 +29,16 @@ function fmtBytes(n?: number | null) {
   return `${v.toFixed(u ? 1 : 0)} ${units[u]}`;
 }
 
+
+const mapJobStatusToStore = (s: Job["status"]) => {
+  switch (s) {
+    case "done": return "completed";
+    case "error": return "failed";
+    case "merging": return "downloading";
+    default: return s; // queued | downloading | paused | canceled
+  }
+};
+
 const statusColor: Record<
   import("@/src/store/useDownloads").JobStatus,
   string
@@ -49,6 +60,43 @@ export default function DownloadsScreen() {
   } = useDownloads();
 
   const list = useMemo(() => Object.values(jobs), [jobs]);
+
+  // Poll backend for server (merge) jobs we are tracking in the store
+  // useEffect(() => {
+  //   // Heuristic: server jobs are the ones we created from /jobs (not RNBD)
+  //   // If you added a flag like isServer, prefer that.
+  //   const serverJobIds = list
+  //     .filter(j => !j.id.startsWith("dl-"))   // RNBD ids were "dl-<timestamp>"
+  //     .map(j => j.id);
+
+  //   if (serverJobIds.length === 0) return;
+
+  //   let stopped = false;
+
+  //   async function tick() {
+  //     try {
+  //       const jobs = await listJobs();
+  //       const store = useDownloads.getState();
+
+  //       for (const j of jobs) {
+  //         if (!serverJobIds.includes(j.id)) continue; // only update cards we show
+  //         store.update(j.id, {
+  //           status: mapJobStatusToStore(j.status),
+  //           progress01: j.progress ?? 0,
+  //           sizeBytes: j.total_bytes ?? undefined,
+  //           error: j.error ?? undefined,
+  //         });
+  //       }
+  //     } catch (e) {
+  //       // ignore transient errors
+  //     }
+  //     if (!stopped) setTimeout(tick, 1000);
+  //   }
+
+  //   tick();
+  //   return () => { stopped = true; };
+  // }, [list]);
+
 
   async function onOpen(localUri?: string, mime?: string) {
     if (!localUri) {

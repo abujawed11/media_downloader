@@ -1,11 +1,14 @@
+// src/services/api/media.ts
 import type { InfoResponse } from "../../features/downloader/types";
 import { api } from "./client";
 
+// ---------- Info ----------
 export async function getInfo(url: string) {
   const { data } = await api.post<InfoResponse>("/info", { url });
   return data;
 }
 
+// (optional) legacy direct download-to-bytes endpoint
 export async function startDownload(params: { url: string; format: string }) {
   return api.get<ArrayBuffer>("/download", {
     params,
@@ -13,10 +16,10 @@ export async function startDownload(params: { url: string; format: string }) {
   });
 }
 
-
+// ---------- Job-based endpoints ----------
 export type CreateJobBody = {
-  url: string;
-  format: string;       // format_string e.g. "137+140" or "18"
+  url: string;             // original media URL
+  format: string;          // format_string e.g. "137+140" or "18"
   title?: string;
   ext?: string;
 };
@@ -27,7 +30,14 @@ export type Job = {
   format_string: string;
   title?: string | null;
   ext?: string | null;
-  status: "queued" | "downloading" | "paused" | "merging" | "done" | "error" | "canceled";
+  status:
+    | "queued"
+    | "downloading"
+    | "paused"
+    | "merging"
+    | "done"
+    | "error"
+    | "canceled";
   progress: number;               // 0..1
   downloaded_bytes: number;
   total_bytes?: number | null;
@@ -67,26 +77,13 @@ export async function cancelJob(id: string) {
   return data;
 }
 
-
-// src/services/api/media.ts
-const BASE = __DEV__
-  ? "http://YOUR_DEV_SERVER:8000"
-  : "https://your-prod-api.example.com";
-
+// ---------- Direct URL for RNBD ----------
 export async function getDirectUrl(params: { url: string; format_id: string }) {
-  const res = await fetch(`${BASE}/media/direct-url`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
-  });
-  if (!res.ok) {
-    const msg = await res.text().catch(() => res.statusText);
-    throw new Error(msg);
-  }
-  return res.json() as Promise<{
+  const { data } = await api.post<{
     url: string;
     fileName?: string;
     mime?: string;
     headers?: Record<string, string>;
-  }>;
+  }>("/direct-url", params);
+  return data;
 }

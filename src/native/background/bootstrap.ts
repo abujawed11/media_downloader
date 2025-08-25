@@ -1,6 +1,6 @@
 // src/native/background/bootstrap.ts
+import RNBackgroundDownloader from "@kesha-antonov/react-native-background-downloader";
 import { PermissionsAndroid, Platform } from "react-native";
-import RNBackgroundDownloader from "react-native-background-downloader";
 
 export async function ensureNotifPermission() {
   if (Platform.OS !== "android") return;

@@ -1,114 +1,135 @@
-// src/features/downloader/hooks/useJobProgress.ts
 import { WS_URL } from "@/src/config/env";
 import { useDownloads } from "@/src/store/useDownloads";
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
+
+// Simple singleton registry
+const sockets = new Map<string, { ws: WebSocket; refs: number }>();
+const pollers = new Map<string, number>(); // one polling timer per jobId
 
 type Update = {
-    id: string;
-    status?: string;
-    progress01?: number;
-    message?: string;
-    finished?: boolean;
-    failed?: boolean;
-    part?: "video" | "audio" | "merging" | "progressive";
-    downloadedBytes?: number;
-    totalBytes?: number | null;
-    speedBps?: number | null;
-    etaSeconds?: number | null;
-    mergeTimeSec?: number | null;
-    type?: "ping";
+  id: string;
+  status?: string;
+  progress01?: number;
+  message?: string;
+  finished?: boolean;
+  failed?: boolean;
+  part?: "video" | "audio" | "merging" | "progressive";
+  downloadedBytes?: number;
+  totalBytes?: number | null;
+  speedBps?: number | null;
+  etaSeconds?: number | null;
+  mergeTimeSec?: number | null;
+  type?: "ping";
 };
 
 export function useJobProgress(jobId?: string) {
-    const {
-        setBackendJobProgress,
-        setBackendJobStatus,
-        setBackendJobMetrics,
-        markJobDone,
-        markJobFailed,
-        startFinalDownloadIfNeeded,
-    } = useDownloads() as any;
+  const {
+    setBackendJobProgress,
+    setBackendJobStatus,
+    setBackendJobMetrics,
+    markJobDone,
+    markJobFailed,
+    startFinalDownloadIfNeeded,
+  } = useDownloads();
 
-    const wsRef = useRef<WebSocket | null>(null);
-    //   const pollRef = useRef<NodeJS.Timer | null>(null);
-    const pollRef = useRef<number | null>(null);
-    const backoffRef = useRef(1000);
+  useEffect(() => {
+    if (!jobId) return;
+    let unmounted = false;
 
-    useEffect(() => {
-        if (!jobId) return;
-        let closed = false;
+    const httpBase = WS_URL.replace(/^ws/i, "http");
 
-        const handle = (d: Update) => {
-            if (!d || d.type === "ping") return;
-            if (typeof d.progress01 === "number") setBackendJobProgress(jobId, d.progress01);
-            if (d.status) setBackendJobStatus(jobId, d.status);
-            setBackendJobMetrics(jobId, {
-                part: d.part,
-                downloadedBytes: d.downloadedBytes,
-                totalBytes: d.totalBytes,
-                speedBps: d.speedBps,
-                etaSeconds: d.etaSeconds,
-            });
-            if (d.failed) {
-                stopPolling(); closeWS();
-                markJobFailed(jobId, d.message);
-            } else if (d.finished) {
-                stopPolling(); closeWS();
-                markJobDone(jobId);
-                startFinalDownloadIfNeeded(jobId); // kick off final GET /jobs/{id}/file
-            }
-        };
+    const handle = (d: Update) => {
+      if (!d || d.type === "ping") return;
 
-        const httpBase = WS_URL.replace(/^ws/i, "http");
+      // Make progress monotonic on the client too (extra guard)
+      if (typeof d.progress01 === "number") {
+        setBackendJobProgress(jobId, d.progress01);
+      }
+      if (d.status) setBackendJobStatus(jobId, d.status);
+      setBackendJobMetrics(jobId, {
+        part: d.part,
+        downloadedBytes: d.downloadedBytes,
+        totalBytes: d.totalBytes,
+        speedBps: d.speedBps,
+        etaSeconds: d.etaSeconds,
+      });
 
-        const startPolling = (ms = 2500) => {
-            if (pollRef.current) return;
-            pollRef.current = (setInterval(async () => {
-                try {
-                    const httpBase = WS_URL.replace(/^ws/i, "http");
-                    const r = await fetch(`${httpBase}/media/jobs/${jobId}/progress`);
-                    if (r.ok) handle(await r.json());
-                } catch { }
-            }, ms) as unknown) as number;
-        };
+      if (d.failed) {
+        stopPolling(jobId);
+        close(jobId);
+        markJobFailed(jobId, d.message);
+      } else if (d.finished) {
+        stopPolling(jobId);
+        close(jobId);
+        markJobDone(jobId);
+        startFinalDownloadIfNeeded(jobId);
+      }
+    };
 
-        // const stopPolling = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
-        const stopPolling = () => {
-            if (pollRef.current !== null) {
-                clearInterval(pollRef.current);
-                pollRef.current = null;
-            }
-        };
-        const closeWS = () => { const ws = wsRef.current; if (ws) { try { ws.close(); } catch { } wsRef.current = null; } };
+    const startPolling = (ms = 2500) => {
+      if (pollers.has(jobId)) return;
+      const id = (setInterval(async () => {
+        try {
+          const r = await fetch(`${httpBase}/media/jobs/${jobId}/progress`);
+          if (r.ok) handle(await r.json());
+        } catch {}
+      }, ms) as unknown) as number;
+      pollers.set(jobId, id);
+    };
 
-        const connect = () => {
-            try {
-                const ws = new WebSocket(`${WS_URL}/ws/jobs/${jobId}`);
-                wsRef.current = ws;
-                ws.onopen = () => { stopPolling(); backoffRef.current = 1000; };
-                ws.onmessage = (e) => { try { handle(JSON.parse(e.data)); } catch { } };
-                ws.onerror = () => { startPolling(2500); };
-                ws.onclose = () => {
-                    if (closed) return;
-                    startPolling(Math.min(5000, backoffRef.current + 1000));
-                    const wait = backoffRef.current;
-                    backoffRef.current = Math.min(15000, backoffRef.current * 2);
-                    setTimeout(connect, wait);
-                };
-            } catch {
-                startPolling(2500);
-                setTimeout(connect, 2000);
-            }
-        };
+    const stopPolling = (id: string) => {
+      const t = pollers.get(id);
+      if (t != null) {
+        clearInterval(t);
+        pollers.delete(id);
+      }
+    };
 
-        startPolling(1500);
-        connect();
+    const open = () => {
+      const existing = sockets.get(jobId);
+      if (existing) {
+        // just increase ref-count
+        existing.refs += 1;
+        return;
+      }
+      const ws = new WebSocket(`${WS_URL}/ws/jobs/${jobId}`);
+      sockets.set(jobId, { ws, refs: 1 });
 
-        // return () => { closed = True as any; stopPolling(); closeWS(); };
-        return () => {
-            closed = true;
-            stopPolling();
-            closeWS();
-        };
-    }, [jobId]);
+      ws.onopen = () => {
+        stopPolling(jobId);
+      };
+      ws.onmessage = (e) => {
+        try { handle(JSON.parse(e.data)); } catch {}
+      };
+      ws.onerror = () => {
+        // keep one polling loop as fallback
+        startPolling(2500);
+      };
+      ws.onclose = () => {
+        // when closed (e.g., server restarts), keep polling
+        startPolling(3000);
+      };
+    };
+
+    const close = (id: string) => {
+      const entry = sockets.get(id);
+      if (!entry) return;
+      entry.refs -= 1;
+      if (entry.refs <= 0) {
+        try { entry.ws.close(); } catch {}
+        sockets.delete(id);
+      }
+    };
+
+    // Start with polling, then open 1 WS per job
+    startPolling(1500);
+    open();
+
+    return () => {
+      if (unmounted) return;
+      unmounted = true;
+      close(jobId);
+      // leave polling off on unmount; if others still reference this job, WS stays alive
+    };
+  }, [jobId, setBackendJobMetrics, setBackendJobProgress, setBackendJobStatus, markJobDone, markJobFailed, startFinalDownloadIfNeeded]);
 }

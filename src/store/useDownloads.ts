@@ -833,6 +833,367 @@
 
 
 // src/store/useDownloads.ts
+// import { API_URL } from "@/src/config/env";
+// import RNBackgroundDownloader from "@kesha-antonov/react-native-background-downloader";
+// import * as FileSystem from "expo-file-system";
+// import * as MediaLibrary from "expo-media-library";
+// import { create } from "zustand";
+
+// export type JobStatus =
+//   | "queued"
+//   | "downloading"
+//   | "paused"
+//   | "completed"
+//   | "failed"
+//   | "canceled";
+
+// export type DlJob = {
+//   id: string;
+//   title?: string | null;
+//   // backend status/progress
+//   status: JobStatus;
+//   progress01: number;
+
+//   fileName?: string | null;     // <-- NEW (progressive or placeholder name)
+//   clientProgress01?: number;    // <-- NEW (RNBD progress for progressive/final)
+
+//   // media meta
+//   sizeBytes?: number | null;
+//   quality?: string | null;
+//   ext?: string | null;
+//   thumbnail?: string | null;
+
+//   // live backend metrics
+//   part?: "video" | "audio" | "merging" | "progressive";
+//   downloadedBytes?: number;
+//   totalBytes?: number | null;
+//   speedBps?: number | null;
+//   etaSeconds?: number | null;
+
+//   // after final file is downloaded to app cache:
+//   localUri?: string | null;
+//   mime?: string | null;
+
+//   // errors
+//   error?: string | null;
+
+//   // RNBackgroundDownloader task (for final file), opaque
+//   task?: any;
+
+//   finalFetchStarted?: boolean; // <-- guard so we don't start the final download twice
+// };
+
+// type DownloadsState = {
+//   jobs: Record<string, DlJob>;
+//   upsertJob: (j: Partial<DlJob> & { id: string }) => void;
+
+//   // NEW (used by index.tsx)
+//   addNativeJob: (j: {
+//     id: string;
+//     title?: string | null;
+//     fileName?: string | null;
+//     quality?: string | null;
+//     ext?: string | null;
+//     sizeBytes?: number | null;
+//     mime?: string | null;
+//     progress01?: number;
+//     status?: JobStatus;
+//   }) => void;
+//   update: (id: string, patch: Partial<DlJob>) => void;
+//   updateProgress: (id: string, p01: number) => void;
+//   attachTask: (id: string, task: any) => void;
+//   markCompleted: (id: string, tempPath?: string) => Promise<void>;
+//   markFailed: (id: string, message?: string) => void;     // alias for failures
+
+//   // backend updates
+//   setBackendJobProgress: (id: string, p01: number) => void;
+//   setBackendJobStatus: (id: string, raw: string) => void;
+//   setBackendJobMetrics: (id: string, m: Partial<DlJob>) => void;
+//   markJobDone: (id: string) => void;
+//   markJobFailed: (id: string, msg?: string) => void;
+
+//   // client-side: fetch /jobs/{id}/file and save to Downloads
+//   startFinalDownloadIfNeeded: (id: string) => Promise<void>;
+
+//   // controls (no-ops until server supports them)
+//   pause: (id: string) => void;
+//   resume: (id: string) => void;
+//   cancel: (id: string) => void;
+
+//   remove: (id: string) => void;
+//   clear: () => void;
+// };
+
+// const toUiStatus = (raw: string): JobStatus => {
+//   switch (raw) {
+//     case "finished": return "completed";
+//     case "failed": return "failed";
+//     case "merging": return "downloading";
+//     case "queued":
+//     case "downloading":
+//     case "paused":
+//     case "canceled":
+//       return raw as JobStatus;
+//     case "done": return "completed";
+//     case "error": return "failed";
+//     default: return "downloading";
+//   }
+// };
+
+// function clamp01(n: number) { return Math.max(0, Math.min(1, n)); }
+
+// export const useDownloads = create<DownloadsState>((set, get) => ({
+//   jobs: {},
+
+
+
+//   // ===== Methods used by app/(tabs)/index.tsx =====
+//   addNativeJob: (j: {
+//     id: string;
+//     title?: string | null;
+//     fileName?: string | null;
+//     quality?: string | null;
+//     ext?: string | null;
+//     sizeBytes?: number | null;
+//     mime?: string | null;
+//     progress01?: number;
+//     status?: JobStatus;
+//   }) =>
+//     set((s) => {
+//       const prev = s.jobs[j.id] || {
+//         id: j.id,
+//         status: "queued" as JobStatus,
+//         progress01: 0,
+//       };
+//       const next: DlJob = {
+//         ...prev,
+//         title: j.title ?? prev.title,
+//         fileName: j.fileName ?? prev.fileName,
+//         quality: j.quality ?? prev.quality,
+//         ext: j.ext ?? prev.ext,
+//         sizeBytes: j.sizeBytes ?? prev.sizeBytes,
+//         mime: j.mime ?? prev.mime,
+//         progress01: clamp01(j.progress01 ?? prev.progress01 ?? 0),
+//         status: j.status ?? prev.status,
+//       };
+//       return { jobs: { ...s.jobs, [j.id]: next } };
+//     }),
+
+//   update: (id: string, patch: Partial<DlJob>) =>
+//     set((s) => {
+//       const prev = s.jobs[id] || { id, status: "queued" as JobStatus, progress01: 0 };
+//       const next: DlJob = { ...prev, ...patch };
+//       if (typeof next.progress01 === "number") next.progress01 = clamp01(next.progress01);
+//       if (typeof (next as any).clientProgress01 === "number") (next as any).clientProgress01 = clamp01((next as any).clientProgress01);
+//       return { jobs: { ...s.jobs, [id]: next } };
+//     }),
+
+//   updateProgress: (id: string, p01: number) =>
+//     set((s) => {
+//       const prev = s.jobs[id] || { id, status: "queued" as JobStatus, progress01: 0 };
+//       return { jobs: { ...s.jobs, [id]: { ...prev, status: "downloading", progress01: clamp01(p01) } } };
+//     }),
+
+//   attachTask: (id: string, task: any) =>
+//     set((s) => {
+//       const prev = s.jobs[id] || { id, status: "queued" as JobStatus, progress01: 0 };
+//       return { jobs: { ...s.jobs, [id]: { ...prev, task } } };
+//     }),
+
+//   // Mark a progressive/background file as completed and move to "Download" album
+//   markCompleted: async (id: string, tempPath?: string) => {
+//     const s = get();
+//     const prev = s.jobs[id];
+//     if (!prev) return;
+
+//     try {
+//       if (tempPath) {
+//         const perm = await MediaLibrary.requestPermissionsAsync();
+//         if (perm.granted) {
+//           const asset = await MediaLibrary.createAssetAsync(tempPath);
+//           let album = await MediaLibrary.getAlbumAsync("Download");
+//           if (!album) {
+//             album = await MediaLibrary.createAlbumAsync("Download", asset, false);
+//           } else {
+//             await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+//           }
+//           set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], status: "completed", progress01: 1, localUri: asset.uri } } }));
+//         } else {
+//           set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], status: "completed", progress01: 1, error: "Storage permission denied" } } }));
+//         }
+//         return;
+//       }
+
+//       // No tempPath case (e.g. server-merged flow)
+//       set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], status: "completed", progress01: 1 } } }));
+//     } catch (e: any) {
+//       set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], status: "failed", error: String(e?.message || e) } } }));
+//     }
+//   },
+
+//   // Alias used by index.tsx for failures
+//   markFailed: (id: string, message?: string) =>
+//     set((s) => {
+//       const prev = s.jobs[id] || { id, status: "queued" as JobStatus, progress01: 0 };
+//       return { jobs: { ...s.jobs, [id]: { ...prev, status: "failed", error: message || "Failed" } } };
+//     }),
+
+
+
+//   upsertJob: (j) =>
+//     set((s) => ({ jobs: { ...s.jobs, [j.id]: { ...(s.jobs[j.id] || { id: j.id, status: "queued", progress01: 0 }), ...j } } })),
+
+//   //  setBackendJobProgress: (id, p01) =>
+//   //   set((s) => {
+//   //     const it = s.jobs[id] || { id, status: "queued", progress01: 0 };
+//   //     const next = Math.max(it.progress01 ?? 0, Math.max(0, Math.min(1, p01)));
+//   //     return { jobs: { ...s.jobs, [id]: { ...it, progress01: next } } };
+//   //   }),
+
+//   setBackendJobProgress: (id, p01) =>
+//     set((s) => {
+//       const it = s.jobs[id] || { id, status: "queued", progress01: 0 };
+//       const nextRaw = Math.max(0, Math.min(1, p01));
+//       const prev = it.progress01 ?? 0;
+//       // require at least +0.005 (0.5%) or jump if big
+//       const delta = nextRaw - prev;
+//       if (delta < 0) {
+//         // don't go backwards
+//         return { jobs: { ...s.jobs, [id]: { ...it, progress01: prev } } };
+//       }
+//       if (delta < 0.005) {
+//         // too tiny -> ignore, keeps UI stable
+//         return s;
+//       }
+//       return { jobs: { ...s.jobs, [id]: { ...it, progress01: nextRaw } } };
+//     }),
+
+//   setBackendJobStatus: (id, raw) =>
+//     set((s) => {
+//       const it = s.jobs[id] || { id, status: "queued", progress01: 0 };
+//       return { jobs: { ...s.jobs, [id]: { ...it, status: toUiStatus(raw) } } };
+//     }),
+
+//   setBackendJobMetrics: (id, m) =>
+//     set((s) => {
+//       const it = s.jobs[id] || { id, status: "queued", progress01: 0 };
+//       return { jobs: { ...s.jobs, [id]: { ...it, ...m } } };
+//     }),
+
+//   markJobDone: (id) =>
+//     set((s) => {
+//       const it = s.jobs[id] || { id, status: "queued", progress01: 0 };
+//       return { jobs: { ...s.jobs, [id]: { ...it, status: "completed", progress01: 1 } } };
+//     }),
+
+//   markJobFailed: (id, msg) =>
+//     set((s) => {
+//       const it = s.jobs[id] || { id, status: "queued", progress01: 0 };
+//       return { jobs: { ...s.jobs, [id]: { ...it, status: "failed", error: msg || "Failed" } } };
+//     }),
+
+
+//     startFinalDownloadIfNeeded: async (id: string) => {
+//   const s = get();
+//   const job = s.jobs[id];
+//   if (!job) return;
+//   if (job.localUri) return;                 // already saved to MediaLibrary
+//   if (job.status !== "completed") return;   // only after server marks finished
+//   if (job.finalFetchStarted) return;        // GUARD: don't start twice
+
+//   // Mark as started (synchronous state update)
+//   set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], finalFetchStarted: true } } }));
+
+//   // 1) Fetch meta so we get the server-provided filename/mime
+//   let fileName = job.fileName || undefined;
+//   let mime = job.mime || undefined;
+//   try {
+//     const r = await fetch(`${API_URL.replace(/\/$/, "")}/media/jobs/${id}`);
+//     if (r.ok) {
+//       const j = await r.json();
+//       fileName = j?.fileName || fileName;
+//       mime = j?.mime || mime;
+//     }
+//   } catch {}
+
+//   // 2) Build destination using a decent extension
+//   const cacheDir = FileSystem.cacheDirectory || FileSystem.documentDirectory!;
+//   const safeName = (fileName || `${id}${mime?.includes("mp4") ? ".mp4" : mime?.includes("webm") ? ".webm" : ".bin"}`)
+//     .replace(/[^\w\-. ]+/g, "_");
+//   const destPath = `${cacheDir}${safeName}`;
+
+//   // 3) Ask permission up front (fail fast)
+//   const perm = await MediaLibrary.requestPermissionsAsync();
+//   if (!perm.granted) {
+//     set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], error: "Storage permission denied", finalFetchStarted: false } } }));
+//     return;
+//   }
+
+//   // 4) Start robust RNBD download of the merged file
+//   const fileUrl = `${API_URL.replace(/\/$/, "")}/media/jobs/${id}/file`;
+//   const task = (RNBackgroundDownloader.download({
+//     id: `final-${id}`,
+//     url: fileUrl,
+//     destination: destPath,
+//     headers: {},
+//   }) as any)
+//     .begin(() => {
+//       // Optionally reflect client-side progress bar separately:
+//       set((st) => {
+//         const it = st.jobs[id]; if (!it) return st;
+//         return { jobs: { ...st.jobs, [id]: { ...it, clientProgress01: 0 } } };
+//       });
+//     })
+//     .progress((p: number) => {
+//       set((st) => {
+//         const it = st.jobs[id]; if (!it) return st;
+//         return { jobs: { ...st.jobs, [id]: { ...it, clientProgress01: Math.max(0, Math.min(1, p)) } } };
+//       });
+//     })
+//     .done(async () => {
+//       try {
+//         const asset = await MediaLibrary.createAssetAsync(destPath);
+//         let album = await MediaLibrary.getAlbumAsync("Download");
+//         if (!album) album = await MediaLibrary.createAlbumAsync("Download", asset, false);
+//         else await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+
+//         set((st) => ({
+//           jobs: {
+//             ...st.jobs,
+//             [id]: {
+//               ...st.jobs[id],
+//               localUri: asset.uri,
+//               fileName: safeName,
+//               mime: mime || st.jobs[id].mime || null,
+//               finalFetchStarted: false, // done
+//             },
+//           },
+//         }));
+//       } catch (e: any) {
+//         set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], error: String(e?.message || e), finalFetchStarted: false } } }));
+//       }
+//     })
+//     .error((e: any) => {
+//       set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], error: String(e?.message || e), finalFetchStarted: false } } }));
+//     });
+
+//   // 5) Keep a handle (optional)
+//   set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], task } } }));
+// },
+//   pause: (_id) => { /* wire server/client pause as needed */ },
+//   resume: (_id) => { /* wire server/client resume as needed */ },
+//   cancel: (_id) => { /* wire server/client cancel as needed */ },
+
+//   remove: (id) => set((s) => {
+//     const next = { ...s.jobs }; delete next[id]; return { jobs: next };
+//   }),
+//   clear: () => set({ jobs: {} }),
+// }));
+
+
+
+
+// src/store/useDownloads.ts
 import { API_URL } from "@/src/config/env";
 import RNBackgroundDownloader from "@kesha-antonov/react-native-background-downloader";
 import * as FileSystem from "expo-file-system";
@@ -850,18 +1211,21 @@ export type JobStatus =
 export type DlJob = {
   id: string;
   title?: string | null;
-  // backend status/progress
-  status: JobStatus;
-  progress01: number;
 
-  fileName?: string | null;     // <-- NEW (progressive or placeholder name)
-  clientProgress01?: number;    // <-- NEW (RNBD progress for progressive/final)
+  // backend status/progress (server phase)
+  status: JobStatus;
+  progress01: number; // monotonic (0..1)
+
+  // filename / UI
+  fileName?: string | null;
+  clientProgress01?: number; // RNBD final fetch progress (0..1)
 
   // media meta
   sizeBytes?: number | null;
   quality?: string | null;
   ext?: string | null;
   thumbnail?: string | null;
+  mime?: string | null;
 
   // live backend metrics
   part?: "video" | "audio" | "merging" | "progressive";
@@ -870,22 +1234,27 @@ export type DlJob = {
   speedBps?: number | null;
   etaSeconds?: number | null;
 
-  // after final file is downloaded to app cache:
+  // after final file is downloaded/imported:
   localUri?: string | null;
-  mime?: string | null;
 
   // errors
   error?: string | null;
 
-  // RNBackgroundDownloader task (for final file), opaque
+  // RNBackgroundDownloader task (opaque)
   task?: any;
+
+  // Guards for final fetch
+  finalFetchStarted?: boolean; // once true, do not auto-start again
+  finalFetchDone?: boolean;    // imported into MediaLibrary
 };
 
 type DownloadsState = {
   jobs: Record<string, DlJob>;
+
+  // generic upsert (used by various places)
   upsertJob: (j: Partial<DlJob> & { id: string }) => void;
 
-  // NEW (used by index.tsx)
+  // used by app/(tabs)/index.tsx for progressive entries
   addNativeJob: (j: {
     id: string;
     title?: string | null;
@@ -900,20 +1269,22 @@ type DownloadsState = {
   update: (id: string, patch: Partial<DlJob>) => void;
   updateProgress: (id: string, p01: number) => void;
   attachTask: (id: string, task: any) => void;
-  markCompleted: (id: string, tempPath?: string) => Promise<void>;
-  markFailed: (id: string, message?: string) => void;     // alias for failures
 
-  // backend updates
+  // progressive RNBD path: mark done and import a given temp file
+  markCompleted: (id: string, tempPath?: string) => Promise<void>;
+  markFailed: (id: string, message?: string) => void;
+
+  // backend (server) updates
   setBackendJobProgress: (id: string, p01: number) => void;
   setBackendJobStatus: (id: string, raw: string) => void;
   setBackendJobMetrics: (id: string, m: Partial<DlJob>) => void;
-  markJobDone: (id: string) => void;
+  markJobDone: (id: string) => void; // server says "finished"
   markJobFailed: (id: string, msg?: string) => void;
 
-  // client-side: fetch /jobs/{id}/file and save to Downloads
+  // after server finished: GET /media/jobs/{id}/file -> import to Downloads
   startFinalDownloadIfNeeded: (id: string) => Promise<void>;
 
-  // controls (no-ops until server supports them)
+  // controls (stubs)
   pause: (id: string) => void;
   resume: (id: string) => void;
   cancel: (id: string) => void;
@@ -943,26 +1314,21 @@ function clamp01(n: number) { return Math.max(0, Math.min(1, n)); }
 export const useDownloads = create<DownloadsState>((set, get) => ({
   jobs: {},
 
+  // ---------- Basic helpers ----------
+  upsertJob: (j) =>
+    set((s) => ({
+      jobs: {
+        ...s.jobs,
+        [j.id]: {
+          ...(s.jobs[j.id] || { id: j.id, status: "queued", progress01: 0 }),
+          ...j,
+        },
+      },
+    })),
 
-
-  // ===== Methods used by app/(tabs)/index.tsx =====
-  addNativeJob: (j: {
-    id: string;
-    title?: string | null;
-    fileName?: string | null;
-    quality?: string | null;
-    ext?: string | null;
-    sizeBytes?: number | null;
-    mime?: string | null;
-    progress01?: number;
-    status?: JobStatus;
-  }) =>
+  addNativeJob: (j) =>
     set((s) => {
-      const prev = s.jobs[j.id] || {
-        id: j.id,
-        status: "queued" as JobStatus,
-        progress01: 0,
-      };
+      const prev = s.jobs[j.id] || { id: j.id, status: "queued" as JobStatus, progress01: 0 };
       const next: DlJob = {
         ...prev,
         title: j.title ?? prev.title,
@@ -977,29 +1343,29 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
       return { jobs: { ...s.jobs, [j.id]: next } };
     }),
 
-  update: (id: string, patch: Partial<DlJob>) =>
+  update: (id, patch) =>
     set((s) => {
       const prev = s.jobs[id] || { id, status: "queued" as JobStatus, progress01: 0 };
       const next: DlJob = { ...prev, ...patch };
       if (typeof next.progress01 === "number") next.progress01 = clamp01(next.progress01);
-      if (typeof (next as any).clientProgress01 === "number") (next as any).clientProgress01 = clamp01((next as any).clientProgress01);
+      if (typeof next.clientProgress01 === "number") next.clientProgress01 = clamp01(next.clientProgress01);
       return { jobs: { ...s.jobs, [id]: next } };
     }),
 
-  updateProgress: (id: string, p01: number) =>
+  updateProgress: (id, p01) =>
     set((s) => {
       const prev = s.jobs[id] || { id, status: "queued" as JobStatus, progress01: 0 };
       return { jobs: { ...s.jobs, [id]: { ...prev, status: "downloading", progress01: clamp01(p01) } } };
     }),
 
-  attachTask: (id: string, task: any) =>
+  attachTask: (id, task) =>
     set((s) => {
       const prev = s.jobs[id] || { id, status: "queued" as JobStatus, progress01: 0 };
       return { jobs: { ...s.jobs, [id]: { ...prev, task } } };
     }),
 
-  // Mark a progressive/background file as completed and move to "Download" album
-  markCompleted: async (id: string, tempPath?: string) => {
+  // ---------- Progressive RNBD flow: a tempPath was already downloaded ----------
+  markCompleted: async (id, tempPath) => {
     const s = get();
     const prev = s.jobs[id];
     if (!prev) return;
@@ -1008,43 +1374,59 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
       if (tempPath) {
         const perm = await MediaLibrary.requestPermissionsAsync();
         if (perm.granted) {
+          // tempPath should be file:// scheme already
           const asset = await MediaLibrary.createAssetAsync(tempPath);
           let album = await MediaLibrary.getAlbumAsync("Download");
-          if (!album) {
-            album = await MediaLibrary.createAlbumAsync("Download", asset, false);
-          } else {
-            await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
-          }
-          set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], status: "completed", progress01: 1, localUri: asset.uri } } }));
+          if (!album) album = await MediaLibrary.createAlbumAsync("Download", asset, false);
+          else await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+
+          set((st) => ({
+            jobs: {
+              ...st.jobs,
+              [id]: { ...st.jobs[id], status: "completed", progress01: 1, localUri: asset.uri, finalFetchDone: true },
+            },
+          }));
         } else {
-          set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], status: "completed", progress01: 1, error: "Storage permission denied" } } }));
+          set((st) => ({
+            jobs: {
+              ...st.jobs,
+              [id]: { ...st.jobs[id], status: "completed", progress01: 1, error: "Storage permission denied" },
+            },
+          }));
         }
         return;
       }
 
-      // No tempPath case (e.g. server-merged flow)
+      // No tempPath case
       set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], status: "completed", progress01: 1 } } }));
     } catch (e: any) {
       set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], status: "failed", error: String(e?.message || e) } } }));
     }
   },
 
-  // Alias used by index.tsx for failures
-  markFailed: (id: string, message?: string) =>
+  markFailed: (id, message) =>
     set((s) => {
       const prev = s.jobs[id] || { id, status: "queued" as JobStatus, progress01: 0 };
       return { jobs: { ...s.jobs, [id]: { ...prev, status: "failed", error: message || "Failed" } } };
     }),
 
-
-
-  upsertJob: (j) =>
-    set((s) => ({ jobs: { ...s.jobs, [j.id]: { ...(s.jobs[j.id] || { id: j.id, status: "queued", progress01: 0 }), ...j } } })),
-
+  // ---------- Backend (server) updates ----------
   setBackendJobProgress: (id, p01) =>
     set((s) => {
       const it = s.jobs[id] || { id, status: "queued", progress01: 0 };
-      return { jobs: { ...s.jobs, [id]: { ...it, progress01: Math.max(0, Math.min(1, p01)) } } };
+      const nextRaw = clamp01(p01);
+      const prev = it.progress01 ?? 0;
+      const delta = nextRaw - prev;
+
+      if (delta < 0) {
+        // never regress
+        return { jobs: { ...s.jobs, [id]: { ...it, progress01: prev } } };
+      }
+      if (delta < 0.005) {
+        // ignore micro-jitter
+        return s;
+      }
+      return { jobs: { ...s.jobs, [id]: { ...it, progress01: nextRaw } } };
     }),
 
   setBackendJobStatus: (id, raw) =>
@@ -1071,102 +1453,137 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
       return { jobs: { ...s.jobs, [id]: { ...it, status: "failed", error: msg || "Failed" } } };
     }),
 
+  // ---------- Final download (server-merged): /media/jobs/{id}/file ----------
   startFinalDownloadIfNeeded: async (id: string) => {
     const s = get();
     const job = s.jobs[id];
-    if (!job || job.localUri || job.status !== "completed") return;
+    if (!job) return;
 
-    // ensure media permission so we can move file to Download album
+    // Already imported or ineligible?
+    if (job.localUri || job.finalFetchDone) return;
+    if (job.status !== "completed") return;
+
+    // Guard against multiples (WS + poll races)
+    if (job.finalFetchStarted) return;
+    set((st) => ({
+      jobs: { ...st.jobs, [id]: { ...st.jobs[id], finalFetchStarted: true } },
+    }));
+
+    // Get server filename/mime for a good extension
+    let fileName = job.fileName || undefined;
+    let mime = job.mime || undefined;
+    try {
+      const r = await fetch(`${API_URL.replace(/\/$/, "")}/media/jobs/${id}`);
+      if (r.ok) {
+        const j = await r.json();
+        fileName = j?.fileName || fileName;
+        mime = j?.mime || mime;
+      }
+    } catch {}
+
+    const safeName = (fileName ||
+      `${id}${
+        mime?.includes("mp4") ? ".mp4" :
+        mime?.includes("webm") ? ".webm" :
+        ".mp4"
+      }`).replace(/[^\w\-. ]+/g, "_");
+
+    // Permissions first (fail fast)
     const perm = await MediaLibrary.requestPermissionsAsync();
     if (!perm.granted) {
-      set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], error: "Storage permission denied" } } }));
+      set((st) => ({
+        jobs: { ...st.jobs, [id]: { ...st.jobs[id], error: "Storage permission denied" } },
+      }));
       return;
     }
 
-    const fileUrl = `${API_URL.replace(/\/$/, "")}/media/jobs/${id}/file`;
-    const cacheDir = FileSystem.cacheDirectory || FileSystem.documentDirectory!;
-    const destPath = `${cacheDir}${id}.bin`;
+    // RNBD needs a real filesystem path (no "file://")
+    // Prefer RNBD's own documents directory. Fallback to Expo's doc dir stripped of scheme.
+    const rnbdDocs: string | undefined = (RNBackgroundDownloader as any).directories?.documents;
+    let destBase = rnbdDocs;
+    if (!destBase) {
+      const expDoc = FileSystem.documentDirectory; // usually "file:///data/user/0/<app>/files/"
+      destBase = expDoc ? expDoc.replace(/^file:\/\//, "") : undefined;
+    }
+    if (!destBase) {
+      // last-ditch fallback (not ideal, but prevents crash)
+      destBase = "/sdcard/Download";
+    }
+    const destPath = `${destBase}/${safeName}`;
 
-    // Use RNBackgroundDownloader for resilience
-    const task = RNBackgroundDownloader.download({
+    const fileUrl = `${API_URL.replace(/\/$/, "")}/media/jobs/${id}/file`;
+
+    // Start robust RNBD download of the merged file
+    const task = (RNBackgroundDownloader.download({
       id: `final-${id}`,
       url: fileUrl,
-      destination: destPath,
+      destination: destPath, // raw fs path
       headers: {},
-    }) as any;
-
-    task
+    }) as any)
       .begin(() => {
-        // optional: UI cue
+        set((st) => {
+          const it = st.jobs[id]; if (!it) return st;
+          return { jobs: { ...st.jobs, [id]: { ...it, clientProgress01: 0 } } };
+        });
+        // console.log("[final RNBD] begin", fileUrl, "->", destPath);
       })
       .progress((p: number) => {
         set((st) => {
-          const it = st.jobs[id];
-          if (!it) return st;
-          return { jobs: { ...st.jobs, [id]: { ...it, clientProgress01: Math.max(0, Math.min(1, p)) } } };
+          const it = st.jobs[id]; if (!it) return st;
+          return { jobs: { ...st.jobs, [id]: { ...it, clientProgress01: clamp01(p) } } };
         });
       })
       .done(async () => {
         try {
-          const asset = await MediaLibrary.createAssetAsync(destPath);
+          // Add "file://" for MediaLibrary
+          const asset = await MediaLibrary.createAssetAsync(`file://${destPath}`);
           let album = await MediaLibrary.getAlbumAsync("Download");
-          if (!album) {
-            album = await MediaLibrary.createAlbumAsync("Download", asset, false);
-          } else {
-            await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
-          }
-          set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], localUri: asset.uri } } }));
+          if (!album) album = await MediaLibrary.createAlbumAsync("Download", asset, false);
+          else await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+
+          set((st) => ({
+            jobs: {
+              ...st.jobs,
+              [id]: {
+                ...st.jobs[id],
+                localUri: asset.uri,
+                fileName: safeName,
+                mime: mime || st.jobs[id].mime || null,
+                finalFetchDone: true, // mark done; do not auto-start again ever
+              },
+            },
+          }));
+          // console.log("[final RNBD] done", destPath);
         } catch (e: any) {
-          set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], error: String(e?.message || e) } } }));
+          set((st) => ({
+            jobs: { ...st.jobs, [id]: { ...st.jobs[id], error: String(e?.message || e) } },
+          }));
+          // allow manual retry by leaving finalFetchStarted=true? Up to you.
         }
       })
       .error((e: any) => {
-        set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], error: String(e?.message || e) } } }));
+        set((st) => ({
+          jobs: { ...st.jobs, [id]: { ...st.jobs[id], error: String(e?.message || e) } },
+        }));
+        // console.log("[final RNBD] error", id, e);
       });
 
-    set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], task } } }));
-    // const task = RNBackgroundDownloader.download({
-    //   id: `final-${id}`,
-    //   url: fileUrl,
-    //   destination: destPath,
-    //   headers: {}, // add auth headers here if needed
-    // }).begin(() => {
-    //   // optional: update UI that we started final client download
-    // }).progress((p: number) => {
-    //   // client-side final download progress (separate from backend p01)
-    //   set((st) => {
-    //     const it = st.jobs[id]; if (!it) return st as any;
-    //     return { jobs: { ...st.jobs, [id]: { ...it, clientProgress01: p } } } as any;
-    //   });
-    // }).done(async () => {
-    //   try {
-    //     // Move into user-visible "Download" album
-    //     const asset = await MediaLibrary.createAssetAsync(destPath);
-    //     let album = await MediaLibrary.getAlbumAsync("Download");
-    //     if (!album) {
-    //       album = await MediaLibrary.createAlbumAsync("Download", asset, false);
-    //     } else {
-    //       await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
-    //     }
-
-    //     // Save localUri for "Open" action
-    //     set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], localUri: asset.uri } } }));
-    //   } catch (e: any) {
-    //     set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], error: String(e?.message || e) } } }));
-    //   }
-    // }).error((e: any) => {
-    //   set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], error: String(e?.message || e) } } }));
-    // });
-
-    // set((st) => ({ jobs: { ...st.jobs, [id]: { ...st.jobs[id], task } } }));
+    set((st) => ({
+      jobs: { ...st.jobs, [id]: { ...st.jobs[id], task } },
+    }));
   },
 
-  pause: (_id) => { /* wire server/client pause as needed */ },
-  resume: (_id) => { /* wire server/client resume as needed */ },
-  cancel: (_id) => { /* wire server/client cancel as needed */ },
+  // ---------- Controls (stubs) ----------
+  pause: (_id) => {},
+  resume: (_id) => {},
+  cancel: (_id) => {},
 
-  remove: (id) => set((s) => {
-    const next = { ...s.jobs }; delete next[id]; return { jobs: next };
-  }),
+  // ---------- Cleanup ----------
+  remove: (id) =>
+    set((s) => {
+      const next = { ...s.jobs };
+      delete next[id];
+      return { jobs: next };
+    }),
   clear: () => set({ jobs: {} }),
 }));

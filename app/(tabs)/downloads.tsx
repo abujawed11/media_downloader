@@ -192,7 +192,7 @@
 
 // app/(tabs)/downloads.tsx
 import ProgressBar from "@/src/components/ProgressBar";
-import { useJobProgress } from "@/src/features/downloader/hooks/useJobProgress";
+import { ensureJobsBusStarted } from "@/src/services/realtime/jobsBus";
 import { useDownloads } from "@/src/store/useDownloads";
 import * as FileSystem from "expo-file-system";
 import * as IntentLauncher from "expo-intent-launcher";
@@ -220,34 +220,39 @@ function fmtEta(sec?: number | null) {
 }
 
 export default function DownloadsScreen() {
+  ensureJobsBusStarted(); // one-time singleton start (safe to call on each render)
   const { jobs, pause, resume, cancel } = useDownloads();
   const list = useMemo(() => Object.values(jobs), [jobs]);
 
- async function onOpen(localUri?: string | null, mime?: string) {
-  if (!localUri) {
-    Alert.alert("Open", "File not available yet.");
-    return;
+  async function onOpen(localUri?: string | null, mime?: string) {
+    if (!localUri) {
+      Alert.alert("Open", "File not available yet.");
+      return;
+    }
+    try {
+      const fileUri = localUri.startsWith("file://") ? localUri : `file://${localUri}`;
+      const contentUri = await FileSystem.getContentUriAsync(fileUri);
+      await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
+        data: contentUri,
+        type: mime || "*/*",
+        flags: 1,
+      });
+    } catch (e) {
+      Alert.alert("Open failed", String(e));
+    }
   }
-  try {
-    const fileUri = localUri.startsWith("file://") ? localUri : `file://${localUri}`;
-    const contentUri = await FileSystem.getContentUriAsync(fileUri);
-    await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
-      data: contentUri,
-      type: mime || "*/*",
-      flags: 1,
-    });
-  } catch (e) {
-    Alert.alert("Open failed", String(e));
-  }
-}
 
   const Row = ({ item }: { item: (typeof list)[number] }) => {
     // Subscribe to WS for this job
-    useJobProgress(item.id);
+    // useJobProgress(item.id);
 
     const pct = Math.max(0, Math.min(1, item.progress01 ?? 0));
+    // const total = item.totalBytes ?? item.sizeBytes ?? null;
+    // const downloaded = item.downloadedBytes ?? (total ? Math.round(total * pct) : null);
     const total = item.totalBytes ?? item.sizeBytes ?? null;
-    const downloaded = item.downloadedBytes ?? (total ? Math.round(total * pct) : null);
+    const downloaded = typeof item.downloadedBytes === "number"
+      ? item.downloadedBytes
+      : (total ? Math.round(total * (item.progress01 ?? 0)) : null);
     const title = item.title ?? "(untitled)";
     const meta = [item.quality, item.ext?.toUpperCase?.()].filter(Boolean).join(" • ");
     const status = item.status;

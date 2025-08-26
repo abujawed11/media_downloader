@@ -5,17 +5,12 @@ import { type Job } from "@/src/services/api/media";
 import type { JobStatus } from "@/src/store/useDownloads";
 import { useDownloads } from "@/src/store/useDownloads";
 import { colors } from "@/src/theme/colors";
+import * as FileSystem from "expo-file-system";
 import * as IntentLauncher from "expo-intent-launcher";
 import { useMemo } from "react";
 import { Alert, FlatList, Pressable, Text, View } from "react-native";
 
-
-
-const ACTIVE_STATUSES: ReadonlyArray<JobStatus> = [
-  "queued",
-  "downloading",
-  "paused",
-];
+const ACTIVE_STATUSES: ReadonlyArray<JobStatus> = ["queued", "downloading", "paused"];
 
 function fmtBytes(n?: number | null) {
   if (!n || n <= 0) return "—";
@@ -29,20 +24,20 @@ function fmtBytes(n?: number | null) {
   return `${v.toFixed(u ? 1 : 0)} ${units[u]}`;
 }
 
-
 const mapJobStatusToStore = (s: Job["status"]) => {
   switch (s) {
-    case "done": return "completed";
-    case "error": return "failed";
-    case "merging": return "downloading";
-    default: return s; // queued | downloading | paused | canceled
+    case "done":
+      return "completed";
+    case "error":
+      return "failed";
+    case "merging":
+      return "downloading";
+    default:
+      return s; // queued | downloading | paused | canceled
   }
 };
 
-const statusColor: Record<
-  import("@/src/store/useDownloads").JobStatus,
-  string
-> = {
+const statusColor: Record<import("@/src/store/useDownloads").JobStatus, string> = {
   queued: "#8a8a8a",
   downloading: colors.brandYellow,
   paused: "#8888ff",
@@ -52,51 +47,9 @@ const statusColor: Record<
 };
 
 export default function DownloadsScreen() {
-  const {
-    jobs,
-    pause,
-    resume,
-    cancel,
-  } = useDownloads();
+  const { jobs, pause, resume, cancel } = useDownloads();
 
   const list = useMemo(() => Object.values(jobs), [jobs]);
-
-  // Poll backend for server (merge) jobs we are tracking in the store
-  // useEffect(() => {
-  //   // Heuristic: server jobs are the ones we created from /jobs (not RNBD)
-  //   // If you added a flag like isServer, prefer that.
-  //   const serverJobIds = list
-  //     .filter(j => !j.id.startsWith("dl-"))   // RNBD ids were "dl-<timestamp>"
-  //     .map(j => j.id);
-
-  //   if (serverJobIds.length === 0) return;
-
-  //   let stopped = false;
-
-  //   async function tick() {
-  //     try {
-  //       const jobs = await listJobs();
-  //       const store = useDownloads.getState();
-
-  //       for (const j of jobs) {
-  //         if (!serverJobIds.includes(j.id)) continue; // only update cards we show
-  //         store.update(j.id, {
-  //           status: mapJobStatusToStore(j.status),
-  //           progress01: j.progress ?? 0,
-  //           sizeBytes: j.total_bytes ?? undefined,
-  //           error: j.error ?? undefined,
-  //         });
-  //       }
-  //     } catch (e) {
-  //       // ignore transient errors
-  //     }
-  //     if (!stopped) setTimeout(tick, 1000);
-  //   }
-
-  //   tick();
-  //   return () => { stopped = true; };
-  // }, [list]);
-
 
   async function onOpen(localUri?: string, mime?: string) {
     if (!localUri) {
@@ -104,9 +57,12 @@ export default function DownloadsScreen() {
       return;
     }
     try {
+      // Convert file:// to content:// so Android can grant access
+      const fileUri = localUri.startsWith("file://") ? localUri : `file://${localUri}`;
+      const contentUri = await FileSystem.getContentUriAsync(fileUri);
       await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
-        data: localUri,
-        type: mime || "application/octet-stream",
+        data: contentUri,
+        type: mime || "*/*",
         flags: 1,
       });
     } catch (e) {
@@ -142,7 +98,6 @@ export default function DownloadsScreen() {
         <ProgressBar progress={pct} />
         <View className="flex-row justify-between mt-1">
           <Text className="text-gray-400 text-xs">{Math.round(pct * 100)}%</Text>
-          {/* With RNBD we don't get speed/ETA by default; you can compute if needed */}
           <Text className="text-gray-400 text-xs">Background service active</Text>
         </View>
 
@@ -150,7 +105,7 @@ export default function DownloadsScreen() {
         <View className="flex-row gap-2 mt-3">
           {status === "downloading" ? (
             <Pressable
-              onPress={() => pause(item.id)}
+              onPress={() => pause?.(item.id)}
               className="px-3 py-2 rounded-xl"
               style={{ backgroundColor: "#1b1b1b" }}
             >
@@ -158,7 +113,7 @@ export default function DownloadsScreen() {
             </Pressable>
           ) : status === "paused" ? (
             <Pressable
-              onPress={() => resume(item.id)}
+              onPress={() => resume?.(item.id)}
               className="px-3 py-2 rounded-xl"
               style={{ backgroundColor: "#1b1b1b" }}
             >
@@ -168,7 +123,7 @@ export default function DownloadsScreen() {
 
           {ACTIVE_STATUSES.includes(status) ? (
             <Pressable
-              onPress={() => cancel(item.id)}
+              onPress={() => cancel?.(item.id)}
               className="px-3 py-2 rounded-xl"
               style={{ backgroundColor: "#1b1b1b" }}
             >
@@ -176,19 +131,11 @@ export default function DownloadsScreen() {
             </Pressable>
           ) : null}
 
-          {/* {status === "completed" ? (
-            <Pressable
-              onPress={() => onOpen(item.localUri, item.mime)}
-              className="px-3 py-2 rounded-xl"
-              style={{ backgroundColor: colors.brandYellow }}
-            >
-              <Text className="text-black font-semibold">Open</Text>
-            </Pressable>
-          ) : null} */}
           {status === "completed" ? (
             <View className="flex-row gap-2">
               <Pressable
-                onPress={() => onOpen(item.localUri, item.mime)}
+                // onPress={() => onOpen(item.localUri, item.mime)}
+                onPress={() => onOpen(item.localUri ?? undefined, item.mime ?? undefined)}
                 className="px-3 py-2 rounded-xl"
                 style={{ backgroundColor: colors.brandYellow }}
               >
@@ -202,7 +149,7 @@ export default function DownloadsScreen() {
                     const uri = await copyToDownloads(
                       item.localUri,
                       item.fileName || "download.mp4",
-                      item.mime
+                      item.mime ?? undefined
                     );
                     Alert.alert("Saved", `Copied to: ${uri}`);
                   } catch (e: any) {

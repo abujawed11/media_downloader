@@ -398,16 +398,183 @@
 
 
 
+// // src/store/useDownloads.ts
+// import { API_URL } from "@/src/config/env";
+// import { startBackgroundDownload } from "@/src/native/background/downloader";
+// import { listJobs, type Job as ServerJob } from "@/src/services/api/media";
+// import { create } from "zustand";
+
+// // --- types the UI already uses ---
+// export type JobStatus =
+//   | "queued" | "downloading" | "paused" | "canceled"
+//   | "completed" | "failed"; // <- UI-friendly status set
+
+// export type DLCard = {
+//   id: string;
+//   title?: string | null;
+//   ext?: string | null;
+//   fileName?: string | null;
+//   quality?: string | null;
+//   status: JobStatus;
+//   progress01?: number;       // 0..1
+//   sizeBytes?: number | null;
+//   localUri?: string;         // file:// path when pulled to device
+//   mime?: string | null;
+//   error?: string | null;
+// };
+
+
+// type DownloadsState = {
+//   jobs: Record<string, DLCard>;
+
+//   // actions used below
+//   setFromServer: (j: ServerJob) => void;
+//   updateProgress: (id: string, p01: number, totalBytes?: number) => void;
+//   markLocalReady: (id: string, localPath: string, mime?: string) => void;
+//   markFailed: (id: string, err: any) => void;
+//   markCompleted: (id: string, localUri: string) => void;
+
+//   // poller
+//   syncServerJobsToDevice: () => Promise<void>;
+// };
+
+// function sanitizeFileName(s: string) {
+//   return (s || "download").replace(/[^\w\-. ]+/g, "_");
+// }
+
+// function mapServerStatus(s: ServerJob["status"]): JobStatus {
+//   switch (s) {
+//     case "done": return "completed";
+//     case "error": return "failed";
+//     default: return s as any; // queued/downloading/paused/merging/canceled
+//   }
+// }
+
+// export const useDownloads = create<DownloadsState>((set, get) => ({
+//   jobs: {},
+
+//   setFromServer: (j) => {
+//     set((state) => {
+//       const prev = state.jobs[j.id] || {};
+//       const status = mapServerStatus(j.status);
+//       const fileName =
+//         j.filename?.split("/").pop() ||
+//         (j.title ? `${sanitizeFileName(j.title)}.${j.ext || "mp4"}` : prev.fileName) ||
+//         prev.fileName ||
+//         null;
+
+//       state.jobs[j.id] = {
+//         id: j.id,
+//         title: j.title,
+//         ext: j.ext,
+//         fileName,
+//         status,
+//         progress01: typeof j.progress === "number" ? j.progress : prev.progress01 || 0,
+//         sizeBytes: j.total_bytes ?? prev.sizeBytes ?? null,
+//         localUri: prev.localUri, // stays until we download locally
+//         mime: prev.mime ?? (j.ext ? `video/${j.ext}` : null),
+//         error: j.error || null,
+//       };
+//       return state;
+//     });
+//   },
+
+//   updateProgress: (id, p01, totalBytes) =>
+//     set((state) => {
+//       const card = state.jobs[id];
+//       if (!card) return state;
+//       state.jobs[id] = {
+//         ...card,
+//         progress01: p01,
+//         sizeBytes: totalBytes ?? card.sizeBytes ?? null,
+//         status: p01 >= 1 ? "completed" : card.status,
+//       };
+//       return state;
+//     }),
+
+//   markLocalReady: (id, localPath, mime) =>
+//     set((state) => {
+//       const card = state.jobs[id];
+//       if (!card) return state;
+//       state.jobs[id] = { ...card, localUri: localPath, mime: mime || card.mime, status: "completed", progress01: 1 };
+//       return state;
+//     }),
+
+//   markFailed: (id, err) =>
+//     set((state) => {
+//       const card = state.jobs[id];
+//       if (!card) return state;
+//       state.jobs[id] = { ...card, status: "failed", error: String(err) };
+//       return state;
+//     }),
+
+
+//   markCompleted: (id, localUri) =>
+//     set((s) => {
+//       const cur = s.jobs[id];
+//       if (!cur) return s;
+//       if (__DEV__) console.log("[DL] completed", id, localUri);
+//       return {
+//         jobs: {
+//           ...s.jobs,
+//           [id]: { ...cur, status: "completed", progress01: 1, localUri },
+//         },
+//       };
+//     }),
+
+//   // --- THIS is the function you pasted ---
+//   syncServerJobsToDevice: async () => {
+//     const jobs = await listJobs();
+
+//     // First: mirror server status to cards
+//     for (const j of jobs) {
+//       get().setFromServer(j);
+//     }
+
+//     // Then: for any server-done job not yet pulled to device, start RNBD
+//     for (const j of jobs) {
+//       const inStore = get().jobs[j.id];
+//       if (j.status === "done" && !inStore?.localUri) {
+//         const fileName =
+//           j.filename?.split("/").pop() ||
+//           `${sanitizeFileName(j.title || "video")}.${j.ext || "mp4"}`;
+
+//         startBackgroundDownload(
+//           {
+//             id: `job-${j.id}`,
+//             url: `${API_URL}/media/jobs/${j.id}/file`,
+//             fileName,
+//             headers: {}, // add auth if you need it
+//           },
+//           {
+//             onBegin: (bytes) => get().updateProgress(j.id, 0, bytes || undefined),
+//             onProgress: (p01) => get().updateProgress(j.id, p01, undefined),
+//             onDone: (localPath) =>
+//               get().markLocalReady(j.id, localPath, j.ext ? `video/${j.ext}` : undefined),
+//             onError: (err) => get().markFailed(j.id, err),
+//           }
+//         );
+//       }
+//     }
+//   },
+// }));
+
+
+
 // src/store/useDownloads.ts
 import { API_URL } from "@/src/config/env";
 import { startBackgroundDownload } from "@/src/native/background/downloader";
 import { listJobs, type Job as ServerJob } from "@/src/services/api/media";
 import { create } from "zustand";
 
-// --- types the UI already uses ---
+/** UI-friendly status set used by the app */
 export type JobStatus =
-  | "queued" | "downloading" | "paused" | "canceled"
-  | "completed" | "failed"; // <- UI-friendly status set
+  | "queued"
+  | "downloading"
+  | "paused"
+  | "canceled"
+  | "completed"
+  | "failed";
 
 export type DLCard = {
   id: string;
@@ -416,25 +583,37 @@ export type DLCard = {
   fileName?: string | null;
   quality?: string | null;
   status: JobStatus;
-  progress01?: number;       // 0..1
+  progress01?: number; // 0..1
   sizeBytes?: number | null;
-  localUri?: string;         // file:// path when pulled to device
+  localUri?: string; // file:// path when pulled to device
   mime?: string | null;
   error?: string | null;
 };
 
-
 type DownloadsState = {
+  /** Cards shown in the Downloads UI, keyed by id (server id or local id) */
   jobs: Record<string, DLCard>;
 
-  // actions used below
+  /** Optional map of native download tasks so we can pause/resume/cancel later */
+  nativeTasks: Record<string, any>;
+
+  /** ---- actions used by UI & sync code ---- */
+  addNativeJob: (card: Partial<DLCard> & { id: string }) => void;
+  update: (id: string, patch: Partial<DLCard>) => void;
+  attachTask: (id: string, task: any) => void;
+
+  // ⬇️ add these three
+  pause?: (id: string) => void;
+  resume?: (id: string) => void;
+  cancel?: (id: string) => void;
+
   setFromServer: (j: ServerJob) => void;
   updateProgress: (id: string, p01: number, totalBytes?: number) => void;
   markLocalReady: (id: string, localPath: string, mime?: string) => void;
   markFailed: (id: string, err: any) => void;
   markCompleted: (id: string, localUri: string) => void;
 
-  // poller
+  /** Poll server jobs and, when done, pull file to device */
   syncServerJobsToDevice: () => Promise<void>;
 };
 
@@ -442,20 +621,98 @@ function sanitizeFileName(s: string) {
   return (s || "download").replace(/[^\w\-. ]+/g, "_");
 }
 
+/** Convert API status to UI status */
 function mapServerStatus(s: ServerJob["status"]): JobStatus {
   switch (s) {
-    case "done": return "completed";
-    case "error": return "failed";
-    default: return s as any; // queued/downloading/paused/merging/canceled
+    case "done":
+      return "completed";
+    case "error":
+      return "failed";
+    case "merging":
+      // Treat "merging" as actively working
+      return "downloading";
+    case "queued":
+    case "downloading":
+    case "paused":
+    case "canceled":
+      return s;
+    default:
+      // Fallback to "queued" to avoid type issues if the API adds a new status
+      return "queued";
   }
 }
 
 export const useDownloads = create<DownloadsState>((set, get) => ({
   jobs: {},
+  nativeTasks: {},
 
-  setFromServer: (j) => {
+  /** Insert or upsert a local/native job card so the UI shows it immediately */
+  addNativeJob: (card) =>
     set((state) => {
-      const prev = state.jobs[j.id] || {};
+      const prev = state.jobs[card.id] || ({} as DLCard);
+      state.jobs[card.id] = {
+        id: card.id,
+        title: card.title ?? prev.title ?? null,
+        ext: card.ext ?? prev.ext ?? null,
+        fileName: card.fileName ?? prev.fileName ?? null,
+        quality: card.quality ?? prev.quality ?? null,
+        status: card.status ?? prev.status ?? "queued",
+        progress01: card.progress01 ?? prev.progress01 ?? 0,
+        sizeBytes: card.sizeBytes ?? prev.sizeBytes ?? null,
+        localUri: card.localUri ?? prev.localUri,
+        mime: card.mime ?? prev.mime ?? null,
+        error: card.error ?? prev.error ?? null,
+      };
+      return state;
+    }),
+
+  /** Patch a card by id */
+  update: (id, patch) =>
+    set((state) => {
+      const cur = state.jobs[id];
+      if (!cur) return state;
+      state.jobs[id] = { ...cur, ...patch };
+      return state;
+    }),
+
+  /** Remember a native RN background downloader task for later controls */
+  attachTask: (id, task) =>
+    set((state) => {
+      state.nativeTasks[id] = task;
+      return state;
+    }),
+
+
+
+  // ⬇️ add these
+  pause: (id) =>
+    set((state) => {
+      const t = state.nativeTasks[id];
+      if (t?.pause) t.pause();
+      if (state.jobs[id]) state.jobs[id] = { ...state.jobs[id], status: "paused" };
+      return state;
+    }),
+
+  resume: (id) =>
+    set((state) => {
+      const t = state.nativeTasks[id];
+      if (t?.resume) t.resume();
+      if (state.jobs[id]) state.jobs[id] = { ...state.jobs[id], status: "downloading" };
+      return state;
+    }),
+
+  cancel: (id) =>
+    set((state) => {
+      const t = state.nativeTasks[id];
+      if (t?.cancel) t.cancel();
+      if (state.jobs[id]) state.jobs[id] = { ...state.jobs[id], status: "canceled" };
+      return state;
+    }),
+
+  /** Mirror a server job into a DLCard */
+  setFromServer: (j) =>
+    set((state) => {
+      const prev = state.jobs[j.id] || ({} as DLCard);
       const status = mapServerStatus(j.status);
       const fileName =
         j.filename?.split("/").pop() ||
@@ -469,15 +726,15 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
         ext: j.ext,
         fileName,
         status,
-        progress01: typeof j.progress === "number" ? j.progress : prev.progress01 || 0,
+        progress01:
+          typeof j.progress === "number" ? j.progress : prev.progress01 ?? 0,
         sizeBytes: j.total_bytes ?? prev.sizeBytes ?? null,
-        localUri: prev.localUri, // stays until we download locally
+        localUri: prev.localUri, // remains until we download locally
         mime: prev.mime ?? (j.ext ? `video/${j.ext}` : null),
         error: j.error || null,
       };
       return state;
-    });
-  },
+    }),
 
   updateProgress: (id, p01, totalBytes) =>
     set((state) => {
@@ -496,7 +753,13 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
     set((state) => {
       const card = state.jobs[id];
       if (!card) return state;
-      state.jobs[id] = { ...card, localUri: localPath, mime: mime || card.mime, status: "completed", progress01: 1 };
+      state.jobs[id] = {
+        ...card,
+        localUri: localPath,
+        mime: mime || card.mime,
+        status: "completed",
+        progress01: 1,
+      };
       return state;
     }),
 
@@ -507,7 +770,6 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
       state.jobs[id] = { ...card, status: "failed", error: String(err) };
       return state;
     }),
-
 
   markCompleted: (id, localUri) =>
     set((s) => {
@@ -522,16 +784,16 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
       };
     }),
 
-  // --- THIS is the function you pasted ---
+  /** Pull server jobs & automatically download finished ones to device */
   syncServerJobsToDevice: async () => {
     const jobs = await listJobs();
 
-    // First: mirror server status to cards
+    // Mirror server state into our cards first
     for (const j of jobs) {
       get().setFromServer(j);
     }
 
-    // Then: for any server-done job not yet pulled to device, start RNBD
+    // For any server-done job not yet on device, start a background download
     for (const j of jobs) {
       const inStore = get().jobs[j.id];
       if (j.status === "done" && !inStore?.localUri) {
@@ -539,21 +801,28 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
           j.filename?.split("/").pop() ||
           `${sanitizeFileName(j.title || "video")}.${j.ext || "mp4"}`;
 
-        startBackgroundDownload(
+        const task = startBackgroundDownload(
           {
             id: `job-${j.id}`,
             url: `${API_URL}/media/jobs/${j.id}/file`,
             fileName,
-            headers: {}, // add auth if you need it
+            headers: {}, // add auth if needed
           },
           {
             onBegin: (bytes) => get().updateProgress(j.id, 0, bytes || undefined),
             onProgress: (p01) => get().updateProgress(j.id, p01, undefined),
             onDone: (localPath) =>
-              get().markLocalReady(j.id, localPath, j.ext ? `video/${j.ext}` : undefined),
+              get().markLocalReady(
+                j.id,
+                localPath,
+                j.ext ? `video/${j.ext}` : undefined
+              ),
             onError: (err) => get().markFailed(j.id, err),
           }
         );
+
+        // Keep a handle in case you want controls in the UI later
+        get().attachTask(j.id, task);
       }
     }
   },

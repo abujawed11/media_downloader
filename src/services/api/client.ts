@@ -2,8 +2,8 @@
 import axios from "axios";
 import { API_URL } from "../../config/env";
 
-// Normalize and mount under /media
-const base = `${API_URL.replace(/\/$/, "")}/media`;
+// Server uses root endpoints, not /media prefix
+const base = `${API_URL.replace(/\/$/, "")}`;
 
 export const api = axios.create({
   baseURL: base,

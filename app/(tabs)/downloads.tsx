@@ -194,12 +194,27 @@
 import ProgressBar from "@/src/components/ProgressBar";
 import { ensureJobsBusStarted } from "@/src/services/realtime/jobsBus";
 import { useDownloads } from "@/src/store/useDownloads";
+import { listJobs, getJob, downloadJobFile } from "@/src/services/api/media";
+import { useJobProgress } from "@/src/features/downloader/hooks/useJobProgress";
+import { API_URL } from "@/src/config/env";
 import * as FileSystem from "expo-file-system";
 import * as IntentLauncher from "expo-intent-launcher";
-import { useMemo } from "react";
+import * as MediaLibrary from "expo-media-library";
+import { useMemo, useEffect, useState } from "react";
 import { Alert, FlatList, Pressable, Text, View } from "react-native";
 
 const ACTIVE_STATUSES: ReadonlyArray<import("@/src/store/useDownloads").JobStatus> = ["queued", "downloading", "paused"];
+
+// Map server job status to store status
+function mapServerStatusToStore(serverStatus: string): import("@/src/store/useDownloads").JobStatus {
+  switch (serverStatus) {
+    case "done": return "completed";
+    case "error": return "failed";
+    case "merging": return "downloading";
+    case "canceled": return "canceled";
+    default: return serverStatus as import("@/src/store/useDownloads").JobStatus;
+  }
+}
 
 function fmtBytes(n?: number | null) {
   if (!n || n <= 0) return "—";
@@ -221,30 +236,305 @@ function fmtEta(sec?: number | null) {
 
 export default function DownloadsScreen() {
   ensureJobsBusStarted(); // one-time singleton start (safe to call on each render)
-  const { jobs, pause, resume, cancel } = useDownloads();
+  const { jobs, pause, resume, cancel, updateJobFromServer } = useDownloads();
   const list = useMemo(() => Object.values(jobs), [jobs]);
+  
+  // Track downloading jobs to prevent multiple simultaneous downloads
+  const [downloadingJobs, setDownloadingJobs] = useState<Set<string>>(new Set());
+
+  // Load existing jobs from server on mount (like web app)
+  useEffect(() => {
+    (async () => {
+      try {
+        const serverJobs = await listJobs();
+        serverJobs.forEach(job => {
+          updateJobFromServer({
+            id: job.id,
+            title: job.title || undefined,
+            fileName: job.filename || `${job.title || 'download'}.${job.ext || 'mp4'}`,
+            quality: job.format_string,
+            ext: job.ext || 'mp4',
+            progress01: job.progress,
+            status: mapServerStatusToStore(job.status),
+            totalBytes: job.total_bytes,
+            downloadedBytes: job.downloaded_bytes,
+            speedBps: job.speed_bps,
+            etaSeconds: job.eta_seconds,
+            error: job.error || undefined,
+            _lastPolled: Date.now(),
+          });
+        });
+      } catch (e) {
+        console.error('Failed to load jobs:', e);
+      }
+    })();
+  }, [updateJobFromServer]);
+
+  // Poll active jobs and recently completed ones (like web app)
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      try {
+        const now = Date.now();
+        const jobsToUpdate = list.filter(j => {
+          if (!['completed', 'failed', 'canceled'].includes(j.status)) return true;
+          // For completed jobs, poll for first 5 seconds after completion
+          if (j.status === 'completed') {
+            const updatedRecently = !j._lastPolled || (now - j._lastPolled) < 5000;
+            return updatedRecently;
+          }
+          return false;
+        });
+
+        if (jobsToUpdate.length === 0) return;
+
+        await Promise.all(jobsToUpdate.map(async j => {
+          try {
+            const fresh = await getJob(j.id);
+            updateJobFromServer({
+              id: fresh.id,
+              title: fresh.title || j.title,
+              fileName: j.fileName,
+              quality: j.quality,
+              ext: j.ext,
+              progress01: fresh.progress,
+              status: mapServerStatusToStore(fresh.status),
+              totalBytes: fresh.total_bytes,
+              downloadedBytes: fresh.downloaded_bytes,
+              speedBps: fresh.speed_bps,
+              etaSeconds: fresh.eta_seconds,
+              error: fresh.error || undefined,
+              _lastPolled: now,
+            });
+          } catch (e) {
+            // Ignore individual job failures
+          }
+        }));
+      } catch (e) {
+        // Ignore transient errors
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [list, updateJobFromServer]);
 
   async function onOpen(localUri?: string | null, mime?: string) {
+    console.log(`[DEBUG] onOpen called with localUri: ${localUri}, mime: ${mime}`);
+    
     if (!localUri) {
       Alert.alert("Open", "File not available yet.");
       return;
     }
+    
     try {
       const fileUri = localUri.startsWith("file://") ? localUri : `file://${localUri}`;
+      console.log(`[DEBUG] File URI: ${fileUri}`);
+      
       const contentUri = await FileSystem.getContentUriAsync(fileUri);
+      console.log(`[DEBUG] Content URI: ${contentUri}`);
+      
       await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
         data: contentUri,
         type: mime || "*/*",
         flags: 1,
       });
+      
+      console.log(`[DEBUG] File opened successfully`);
     } catch (e) {
+      console.log(`[DEBUG] Open failed: ${e}`);
       Alert.alert("Open failed", String(e));
     }
   }
 
+  async function onDownloadAndOpen(jobId: string, title?: string, ext?: string) {
+    console.log(`[DEBUG] onDownloadAndOpen called with jobId: ${jobId}, title: ${title}, ext: ${ext}`);
+    
+    // Prevent multiple simultaneous downloads
+    if (downloadingJobs.has(jobId)) {
+      console.log(`[DEBUG] Download already in progress for job ${jobId}, skipping`);
+      return;
+    }
+    
+    // Add to downloading set
+    setDownloadingJobs(prev => new Set(prev).add(jobId));
+    
+    try {
+      // Check permissions first
+      console.log(`[DEBUG] Requesting MediaLibrary permissions...`);
+      const { status } = await MediaLibrary.requestPermissionsAsync();
+      console.log(`[DEBUG] MediaLibrary permission status: ${status}`);
+      
+      if (status !== 'granted') {
+        Alert.alert("Permission needed", "Storage permission is required to download files.");
+        setDownloadingJobs(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(jobId);
+          return newSet;
+        });
+        return;
+      }
+
+      // Show loading alert
+      Alert.alert("Downloading...", "Saving file to your gallery...", [
+        { text: "Cancel", style: "cancel" }
+      ]);
+
+      // Create filename
+      const fileName = `${(title || 'download').replace(/[^\w\s.-]/g, '_')}.${ext || 'mp4'}`;
+      console.log(`[DEBUG] Generated filename: ${fileName}`);
+      
+      // Step 1: Download to temporary location first
+      const tempFileUri = `${FileSystem.cacheDirectory}${fileName}`;
+      console.log(`[DEBUG] Temp file URI: ${tempFileUri}`);
+      
+      const downloadUrl = `${API_URL}/jobs/${jobId}/file`;
+      console.log(`[DEBUG] Downloading from: ${downloadUrl}`);
+      
+      const downloadResult = await FileSystem.downloadAsync(downloadUrl, tempFileUri);
+      console.log(`[DEBUG] Download result:`, downloadResult);
+      
+      if (downloadResult.status !== 200) {
+        throw new Error(`Download failed with status: ${downloadResult.status}`);
+      }
+
+      console.log(`[DEBUG] File downloaded successfully to temp: ${tempFileUri}`);
+
+      // Step 2: Save to MediaLibrary (Gallery) immediately
+      try {
+        console.log(`[DEBUG] Creating asset from temp file...`);
+        console.log(`[DEBUG] File exists check:`, await FileSystem.getInfoAsync(tempFileUri));
+        
+        // Try creating asset with explicit mediaType
+        const asset = await MediaLibrary.createAssetAsync(tempFileUri, {
+          mediaType: MediaLibrary.MediaType.video,
+        });
+        console.log(`[DEBUG] Asset created successfully:`, asset);
+        console.log(`[DEBUG] Asset URI: ${asset.uri}`);
+        
+        // Step 3: Create/Add to Downloads album
+        console.log(`[DEBUG] Looking for Downloads album...`);
+        let album = await MediaLibrary.getAlbumAsync("Downloads");
+        console.log(`[DEBUG] Downloads album found:`, album);
+        
+        if (!album) {
+          console.log(`[DEBUG] Creating Downloads album...`);
+          album = await MediaLibrary.createAlbumAsync("Downloads", asset, false);
+          console.log(`[DEBUG] Downloads album created:`, album);
+        } else {
+          console.log(`[DEBUG] Adding asset to Downloads album...`);
+          await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+          console.log(`[DEBUG] Asset added to Downloads album successfully`);
+        }
+
+        // Update the job with gallery file info
+        updateJobFromServer({
+          id: jobId,
+          localUri: asset.uri, // This is the gallery URI
+          fileName: fileName,
+        });
+
+        // Step 4: Try to open the file
+        try {
+          await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
+            data: asset.uri,
+            type: ext === 'mp3' || ext === 'm4a' ? `audio/${ext}` : `video/${ext || 'mp4'}`,
+            flags: 1,
+          });
+          
+          Alert.alert("Success!", "File saved to gallery and opened successfully!");
+          
+        } catch (openError) {
+          console.error('Error opening file:', openError);
+          Alert.alert(
+            "File Saved!", 
+            "File has been saved to your device gallery in the 'Downloads' album. You can open it from your gallery app.",
+            [{ text: "OK" }]
+          );
+        }
+
+        // Clean up temp file
+        try {
+          await FileSystem.deleteAsync(tempFileUri);
+        } catch (cleanupError) {
+          console.log('Could not clean up temp file:', cleanupError);
+        }
+
+      } catch (galleryError) {
+        console.error('Error saving to gallery:', galleryError);
+        
+        // Fallback: Try copying to a different location and save to gallery
+        try {
+          console.log(`[DEBUG] Trying alternative approach - copying to Documents first`);
+          const altFileName = `MediaDownload_${Date.now()}.${ext || 'mp4'}`;
+          const altFileUri = `${FileSystem.documentDirectory}${altFileName}`;
+          
+          await FileSystem.copyAsync({
+            from: tempFileUri,
+            to: altFileUri
+          });
+          
+          console.log(`[DEBUG] File copied to: ${altFileUri}`);
+          
+          // Try creating asset from new location
+          const asset = await MediaLibrary.createAssetAsync(altFileUri, {
+            mediaType: MediaLibrary.MediaType.video,
+          });
+          
+          console.log(`[DEBUG] Asset created from alternative location:`, asset);
+          
+          updateJobFromServer({
+            id: jobId,
+            localUri: asset.uri,
+            fileName: fileName,
+          });
+          
+          Alert.alert("Success!", "File saved to gallery successfully!");
+          
+          // Clean up temp files
+          try {
+            await FileSystem.deleteAsync(tempFileUri);
+            await FileSystem.deleteAsync(altFileUri);
+          } catch {}
+          
+        } catch (altError) {
+          console.error('Alternative method also failed:', altError);
+          
+          // Final fallback: keep in app storage
+          updateJobFromServer({
+            id: jobId,
+            localUri: tempFileUri,
+            fileName: fileName,
+          });
+          
+          Alert.alert(
+            "Partially Complete",
+            "File downloaded but couldn't save to gallery. You can still open it from this app.",
+            [
+              {
+                text: "Try Open",
+                onPress: () => onOpen(tempFileUri, `video/${ext || 'mp4'}`)
+              },
+              { text: "OK", style: "cancel" }
+            ]
+          );
+        }
+      }
+
+    } catch (e) {
+      console.error('Download error:', e);
+      Alert.alert("Download failed", `Error: ${String(e)}\n\nPlease try again.`);
+    } finally {
+      // Always remove from downloading set
+      setDownloadingJobs(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(jobId);
+        return newSet;
+      });
+    }
+  }
+
   const Row = ({ item }: { item: (typeof list)[number] }) => {
-    // Subscribe to WS for this job
-    // useJobProgress(item.id);
+    // Subscribe to progress polling for this job
+    useJobProgress(item.id);
 
     const pct = Math.max(0, Math.min(1, item.progress01 ?? 0));
     // const total = item.totalBytes ?? item.sizeBytes ?? null;
@@ -294,10 +584,41 @@ export default function DownloadsScreen() {
             </Pressable>
           ) : null}
 
-          {/* Open button once saved to Downloads */}
-          {status === "completed" && item.localUri ? (
-            <Pressable onPress={() => onOpen(item.localUri, item.mime || undefined)} className="px-3 py-2 rounded-xl" style={{ backgroundColor: "#1b1b1b" }}>
-              <Text className="text-white">Open</Text>
+          {/* Open button for completed jobs */}
+          {status === "completed" ? (
+            <Pressable 
+              onPress={() => {
+                if (downloadingJobs.has(item.id)) return; // Prevent double-tap
+                
+                console.log(`[DEBUG] Button pressed for job ${item.id}`);
+                console.log(`[DEBUG] item.localUri: ${item.localUri}`);
+                console.log(`[DEBUG] Will call: ${item.localUri ? 'onOpen' : 'onDownloadAndOpen'}`);
+                
+                if (item.localUri && item.localUri.includes('content://')) {
+                  // File is in gallery, open directly
+                  console.log(`[DEBUG] Opening gallery file: ${item.localUri}`);
+                  onOpen(item.localUri, item.mime || undefined);
+                } else {
+                  // File not in gallery yet, download and save to gallery
+                  console.log(`[DEBUG] File needs to be saved to gallery`);
+                  onDownloadAndOpen(item.id, item.title || undefined, item.ext || undefined);
+                }
+              }}
+              disabled={downloadingJobs.has(item.id)}
+              className="px-3 py-2 rounded-xl" 
+              style={{ 
+                backgroundColor: downloadingJobs.has(item.id) ? "#333" : "#1b1b1b",
+                opacity: downloadingJobs.has(item.id) ? 0.6 : 1,
+              }}
+            >
+              <Text className="text-white">
+                {downloadingJobs.has(item.id) 
+                  ? "Saving..." 
+                  : (item.localUri && item.localUri.includes('content://')) 
+                    ? "Open" 
+                    : "Save to Gallery"
+                }
+              </Text>
             </Pressable>
           ) : null}
         </View>

@@ -4,7 +4,7 @@ import { useInfo } from "@/src/features/downloader/hooks/useInfo";
 import type { FormatOption } from "@/src/features/downloader/types";
 import { isValidUrl } from "@/src/features/downloader/utils";
 import { startBackgroundDownload } from "@/src/native/background/downloader";
-import { createJob, getDirectUrl } from "@/src/services/api/media"; // <-- implement as shown
+import { createJob } from "@/src/services/api/media";
 import { useDownloads } from "@/src/store/useDownloads";
 import { colors } from "@/src/theme/colors";
 import axios from "axios";
@@ -84,10 +84,9 @@ export default function HomeScreen() {
   }
 
   function fmtDisplay(f: FormatOption) {
-    const size =
-      typeof f.sizeBytes === "number" ? ` ~${(f.sizeBytes / 1e6).toFixed(1)}MB` : "";
-    const note = f.note ? ` • ${f.note}` : "";
-    return `${f.label} • ${f.ext?.toUpperCase?.() ?? ""}${note}${size}`;
+    const size = f.filesize ? ` ${f.filesize}` : "";
+    const ext = f.ext ? ` • ${f.ext.toUpperCase()}` : "";
+    return `${f.label}${ext}${size}`;
   }
 
   function openFormatPicker(preset?: CommonFormat) {
@@ -233,109 +232,30 @@ export default function HomeScreen() {
       const fmt = raw.replace(/-.*$/, "");        // -> "299+140" or "18"
       const chosen = data.formats.find(f => f.format_string === raw);
 
-      // If it's a merge (contains "+"): use server job flow
-      if (fmt.includes("+")) {
-        const job = await createJob({
-          url,
-          format: fmt,
-          title: data.title,
-          ext: chosen?.ext,
-        });
-
-        // (Optional but nice) add a placeholder so the list isn't empty.
-        // NOTE: pause/resume/cancel here won't control the server job unless you also wire backend polling & actions.
-        const placeholderFile =
-          `${(data.title || "download").replace(/[^\w\-. ]+/g, "_")}.${chosen?.ext || "mp4"}`;
-
-        store.addNativeJob({
-          id: job.id,
-          title: data.title,
-          fileName: placeholderFile,
-          quality: chosen?.label || "merge",
-          ext: chosen?.ext || "mp4",
-          progress01: 0,
-          status: "queued",
-        });
-
-        router.push("/(tabs)/downloads");
-        return;
-      }
-
-      // Progressive: get a direct URL and start RN Background Downloader
-      const direct = await getDirectUrl({ url, format_id: fmt });
-
-      const id = `dl-${Date.now()}`;
-      const safeTitle = (data.title || "download").replace(/[^\w\-. ]+/g, "_");
-      const extFromChoice = chosen?.ext || (direct.mime?.includes("webm") ? "webm" : "mp4");
-      const fileName = direct.fileName || `${safeTitle}.${extFromChoice}`;
-      const mime = direct.mime || (extFromChoice === "webm" ? "video/webm" : "video/mp4");
-
-      // 1) Add to store immediately so the Downloads tab shows it
-      store.addNativeJob({
-        id,
+      // Create server job for all downloads (server handles both progressive and merge)
+      const job = await createJob({
+        url,
+        format: fmt,
         title: data.title,
-        fileName,
-        quality: chosen?.label || undefined,
-        ext: extFromChoice,
-        sizeBytes: undefined,
-        progress01: 0,
-        status: "queued",
-        mime,
+        ext: chosen?.ext,
       });
 
-      // 2) Start RNBD and pipe callbacks into the store
-      const task = startBackgroundDownload(
-        { id, url: direct.url, fileName, headers: direct.headers || {} },
-        {
-          onBegin: (expectedBytes) => {
-            store.update(id, {
-              status: "downloading",
-              sizeBytes: typeof expectedBytes === "number" ? expectedBytes : undefined,
-            });
-            console.log("RNBD begin", expectedBytes);
-          },
-          onProgress: (p) => {
-            store.updateProgress(id, p);
-            console.log("RNBD progress", p);
-          },
-          onDone: (dest) => {
-            store.markCompleted(id, dest);
-            console.log("RNBD done", dest);
-          },
-          onError: (e) => {
-            store.markFailed(id, String(e));
-            console.log("RNBD error", e);
-          },
-        }
-      );
+      // Add a placeholder so the list isn't empty
+      const placeholderFile =
+        `${(data.title || "download").replace(/[^\w\-. ]+/g, "_")}.${chosen?.ext || "mp4"}`;
 
-      // 3) Keep task reference for pause/resume/cancel
-      store.attachTask(id, task);
+      store.addNativeJob({
+        id: job.id,
+        title: data.title,
+        fileName: placeholderFile,
+        quality: chosen?.label || "download",
+        ext: chosen?.ext || "mp4",
+        progress01: 0,
+        status: "queued",
+      });
 
       router.push("/(tabs)/downloads");
     } catch (e: any) {
-      const status = axios.isAxiosError(e) ? e.response?.status : undefined;
-      if (status === 409) {
-        // Server rejected (merge). Fallback to job flow and show a placeholder entry.
-        const fmtClean = (selectedFormat || "").replace(/-.*$/, "");
-        const job = await createJob({ url, format: fmtClean, title: data?.title, ext: undefined });
-
-        const fileName =
-          `${(data?.title || "download").replace(/[^\w\-. ]+/g, "_")}.mp4`;
-
-        useDownloads.getState().addNativeJob({
-          id: job.id,
-          title: data?.title,
-          fileName,
-          quality: "merge",
-          ext: "mp4",
-          progress01: 0,
-          status: "queued",
-        });
-
-        router.push("/(tabs)/downloads");
-        return;
-      }
       Alert.alert("Download failed", String(e?.message || e));
     }
   }

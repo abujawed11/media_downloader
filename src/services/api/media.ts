@@ -48,7 +48,7 @@ export type Job = {
 };
 
 export async function createJob(body: CreateJobBody) {
-  const { data } = await api.post<Job>("/jobs", body);
+  const { data } = await api.post<Job>("/jobs/start", body);
   return data;
 }
 
@@ -77,13 +77,14 @@ export async function cancelJob(id: string) {
   return data;
 }
 
-// ---------- Direct URL for RNBD ----------
-export async function getDirectUrl(params: { url: string; format_id: string }) {
-  const { data } = await api.post<{
-    url: string;
-    fileName?: string;
-    mime?: string;
-    headers?: Record<string, string>;
-  }>("/direct-url", params);
-  return data;
+// ---------- File download ----------
+export async function downloadJobFile(jobId: string) {
+  return api.get(`/jobs/${jobId}/file`, {
+    responseType: "arraybuffer",
+  });
+}
+
+// ---------- Image proxy ----------
+export function getProxiedImageUrl(imageUrl: string) {
+  return `${api.defaults.baseURL}/proxy-image?url=${encodeURIComponent(imageUrl)}`;
 }

@@ -1246,6 +1246,9 @@ export type DlJob = {
   // Guards for final fetch
   finalFetchStarted?: boolean; // once true, do not auto-start again
   finalFetchDone?: boolean;    // imported into MediaLibrary
+
+  // Polling tracking (like web app)
+  _lastPolled?: number; // timestamp of last successful poll
 };
 
 type DownloadsState = {
@@ -1283,6 +1286,9 @@ type DownloadsState = {
 
   // after server finished: GET /media/jobs/{id}/file -> import to Downloads
   startFinalDownloadIfNeeded: (id: string) => Promise<void>;
+
+  // update from server job response (like web app)
+  updateJobFromServer: (data: Partial<DlJob> & { id: string }) => void;
 
   // controls (stubs)
   pause: (id: string) => void;
@@ -1572,6 +1578,15 @@ export const useDownloads = create<DownloadsState>((set, get) => ({
       jobs: { ...st.jobs, [id]: { ...st.jobs[id], task } },
     }));
   },
+
+  // ---------- Update from server (like web app) ----------
+  updateJobFromServer: (data) =>
+    set((s) => {
+      const prev = s.jobs[data.id] || { id: data.id, status: "queued" as JobStatus, progress01: 0 };
+      const next: DlJob = { ...prev, ...data };
+      if (typeof next.progress01 === "number") next.progress01 = clamp01(next.progress01);
+      return { jobs: { ...s.jobs, [data.id]: next } };
+    }),
 
   // ---------- Controls (stubs) ----------
   pause: (_id) => {},

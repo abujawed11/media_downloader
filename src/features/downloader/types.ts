@@ -1,10 +1,9 @@
 export type FormatOption = {
-  itag?: string | null;          // present for single-itag formats
+  format_id?: string | null;     // present for single-itag formats
   format_string: string;         // "18" or "137+140"  <-- IMPORTANT
   label: string;                 // "720p mp4", "Audio m4a", etc.
-  ext: string;                   // "mp4" | "webm" | "m4a" | ...
-  note?: string | null;          // "video+audio", etc.
-  sizeBytes?: number | null;     // if available
+  ext?: string | null;           // "mp4" | "webm" | "m4a" | ...
+  filesize?: string;             // human readable file size from server
 };
 
 export type InfoResponse = {

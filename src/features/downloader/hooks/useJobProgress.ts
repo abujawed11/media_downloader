@@ -29,11 +29,18 @@ export function useJobProgress(jobId?: string) {
     markJobDone,
     markJobFailed,
     startFinalDownloadIfNeeded,
+    jobs,
   } = useDownloads();
 
   useEffect(() => {
     if (!jobId) return;
     let unmounted = false;
+    
+    // Check if job is already saved to gallery (silent check to reduce log spam)
+    const job = jobs[jobId];
+    if (job?._gallerySaved) {
+      return; // Silent return to avoid log spam
+    }
 
     const handle = (d: Update) => {
       if (!d || d.type === "ping") return;
@@ -102,5 +109,5 @@ export function useJobProgress(jobId?: string) {
       unmounted = true;
       stopPolling(jobId);
     };
-  }, [jobId, setBackendJobMetrics, setBackendJobProgress, setBackendJobStatus, markJobDone, markJobFailed, startFinalDownloadIfNeeded]);
+  }, [jobId, setBackendJobMetrics, setBackendJobProgress, setBackendJobStatus, markJobDone, markJobFailed, startFinalDownloadIfNeeded, jobs]);
 }

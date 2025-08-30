@@ -276,6 +276,9 @@ export default function DownloadsScreen() {
       try {
         const now = Date.now();
         const jobsToUpdate = list.filter(j => {
+          // Skip gallery-saved jobs (no logging to reduce spam)
+          if (j._gallerySaved) return false;
+          
           if (!['completed', 'failed', 'canceled'].includes(j.status)) return true;
           // For completed jobs, poll for first 5 seconds after completion
           if (j.status === 'completed') {
@@ -285,7 +288,16 @@ export default function DownloadsScreen() {
           return false;
         });
 
-        if (jobsToUpdate.length === 0) return;
+        if (jobsToUpdate.length === 0) {
+          // All jobs are either gallery-saved or don't need polling
+          const hasActiveJobs = list.some(j => !j._gallerySaved && !['completed', 'failed', 'canceled'].includes(j.status));
+          if (!hasActiveJobs) {
+            console.log('[DEBUG] No active jobs remaining, stopping download screen polling');
+            clearInterval(timer);
+            return;
+          }
+          return;
+        }
 
         await Promise.all(jobsToUpdate.map(async j => {
           try {
@@ -398,16 +410,55 @@ export default function DownloadsScreen() {
 
       console.log(`[DEBUG] File downloaded successfully to temp: ${tempFileUri}`);
 
-      // Step 2: Save to MediaLibrary (Gallery) immediately
+      // Step 2: Save to MediaLibrary (Gallery) - try alternative method first
+      let asset;
+      let savedSuccessfully = false;
+
       try {
-        console.log(`[DEBUG] Creating asset from temp file...`);
         console.log(`[DEBUG] File exists check:`, await FileSystem.getInfoAsync(tempFileUri));
         
-        // Try creating asset with explicit mediaType
-        const asset = await MediaLibrary.createAssetAsync(tempFileUri, {
+        // Method 1: Try direct creation from cache (often fails on Android)
+        console.log(`[DEBUG] Trying direct asset creation from cache...`);
+        asset = await MediaLibrary.createAssetAsync(tempFileUri, {
           mediaType: MediaLibrary.MediaType.video,
         });
-        console.log(`[DEBUG] Asset created successfully:`, asset);
+        console.log(`[DEBUG] Direct method succeeded:`, asset);
+        savedSuccessfully = true;
+        
+      } catch (directError) {
+        console.log(`[DEBUG] Direct method failed, trying alternative approach...`);
+        
+        try {
+          // Method 2: Copy to Documents directory first, then create asset (usually works)
+          const altFileName = `MediaDownload_${Date.now()}.${ext || 'mp4'}`;
+          const altFileUri = `${FileSystem.documentDirectory}${altFileName}`;
+          
+          await FileSystem.copyAsync({
+            from: tempFileUri,
+            to: altFileUri
+          });
+          
+          console.log(`[DEBUG] File copied to: ${altFileUri}`);
+          
+          asset = await MediaLibrary.createAssetAsync(altFileUri, {
+            mediaType: MediaLibrary.MediaType.video,
+          });
+          
+          console.log(`[DEBUG] Alternative method succeeded:`, asset);
+          savedSuccessfully = true;
+          
+          // Clean up the copy
+          try {
+            await FileSystem.deleteAsync(altFileUri);
+          } catch {}
+          
+        } catch (altError) {
+          console.error(`[DEBUG] Both methods failed:`, altError);
+          throw altError; // This will go to the main catch block
+        }
+      }
+
+      if (savedSuccessfully && asset) {
         console.log(`[DEBUG] Asset URI: ${asset.uri}`);
         
         // Step 3: Create/Add to Downloads album
@@ -425,20 +476,39 @@ export default function DownloadsScreen() {
           console.log(`[DEBUG] Asset added to Downloads album successfully`);
         }
 
-        // Update the job with gallery file info
+        // Update the job with gallery file info and mark as gallery-saved
         updateJobFromServer({
           id: jobId,
-          localUri: asset.uri, // This is the gallery URI
+          localUri: asset.uri, // This is the gallery URI (content://)
           fileName: fileName,
+          _gallerySaved: true, // Flag to stop polling
         });
 
         // Step 4: Try to open the file
         try {
-          await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
-            data: asset.uri,
-            type: ext === 'mp3' || ext === 'm4a' ? `audio/${ext}` : `video/${ext || 'mp4'}`,
-            flags: 1,
-          });
+          // MediaLibrary asset.uri should be a proper content:// URI
+          console.log(`[DEBUG] Attempting to open asset URI: ${asset.uri}`);
+          
+          if (asset.uri.startsWith('content://')) {
+            // Direct content URI - should work
+            await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
+              data: asset.uri,
+              type: ext === 'mp3' || ext === 'm4a' ? `audio/${ext}` : `video/${ext || 'mp4'}`,
+              flags: 1,
+            });
+          } else if (asset.uri.startsWith('file://')) {
+            // Convert file URI to content URI
+            const contentUri = await FileSystem.getContentUriAsync(asset.uri);
+            console.log(`[DEBUG] Converted to content URI: ${contentUri}`);
+            
+            await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
+              data: contentUri,
+              type: ext === 'mp3' || ext === 'm4a' ? `audio/${ext}` : `video/${ext || 'mp4'}`,
+              flags: 1,
+            });
+          } else {
+            throw new Error(`Unsupported URI scheme: ${asset.uri}`);
+          }
           
           Alert.alert("Success!", "File saved to gallery and opened successfully!");
           
@@ -457,66 +527,10 @@ export default function DownloadsScreen() {
         } catch (cleanupError) {
           console.log('Could not clean up temp file:', cleanupError);
         }
-
-      } catch (galleryError) {
-        console.error('Error saving to gallery:', galleryError);
         
-        // Fallback: Try copying to a different location and save to gallery
-        try {
-          console.log(`[DEBUG] Trying alternative approach - copying to Documents first`);
-          const altFileName = `MediaDownload_${Date.now()}.${ext || 'mp4'}`;
-          const altFileUri = `${FileSystem.documentDirectory}${altFileName}`;
-          
-          await FileSystem.copyAsync({
-            from: tempFileUri,
-            to: altFileUri
-          });
-          
-          console.log(`[DEBUG] File copied to: ${altFileUri}`);
-          
-          // Try creating asset from new location
-          const asset = await MediaLibrary.createAssetAsync(altFileUri, {
-            mediaType: MediaLibrary.MediaType.video,
-          });
-          
-          console.log(`[DEBUG] Asset created from alternative location:`, asset);
-          
-          updateJobFromServer({
-            id: jobId,
-            localUri: asset.uri,
-            fileName: fileName,
-          });
-          
-          Alert.alert("Success!", "File saved to gallery successfully!");
-          
-          // Clean up temp files
-          try {
-            await FileSystem.deleteAsync(tempFileUri);
-            await FileSystem.deleteAsync(altFileUri);
-          } catch {}
-          
-        } catch (altError) {
-          console.error('Alternative method also failed:', altError);
-          
-          // Final fallback: keep in app storage
-          updateJobFromServer({
-            id: jobId,
-            localUri: tempFileUri,
-            fileName: fileName,
-          });
-          
-          Alert.alert(
-            "Partially Complete",
-            "File downloaded but couldn't save to gallery. You can still open it from this app.",
-            [
-              {
-                text: "Try Open",
-                onPress: () => onOpen(tempFileUri, `video/${ext || 'mp4'}`)
-              },
-              { text: "OK", style: "cancel" }
-            ]
-          );
-        }
+      } else {
+        // This shouldn't happen now, but just in case
+        throw new Error("Failed to save file to gallery");
       }
 
     } catch (e) {

@@ -1249,6 +1249,7 @@ export type DlJob = {
 
   // Polling tracking (like web app)
   _lastPolled?: number; // timestamp of last successful poll
+  _gallerySaved?: boolean; // flag to stop polling once saved to gallery
 };
 
 type DownloadsState = {
